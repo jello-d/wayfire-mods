@@ -1,5 +1,8 @@
-# Local dev context, never in the public repo.
+# Local agent context and state; never part of the public repo.
+# CLAUDE.md is a symlink into the private shared-notes repo.
 CLAUDE.md
+CLAUDE.local.md
+.claude/
 # Editor / build detritus.
 *.swp
 *~
