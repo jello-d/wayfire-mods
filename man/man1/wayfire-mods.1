@@ -1,0 +1,67 @@
+.TH WAYFIRE-MODS 1 "2026" "wayfire-mods" "User Commands"
+.SH NAME
+wayfire-mods \- build a Wayland compositor stack (wlroots + Wayfire + plugins)
+from source
+.SH SYNOPSIS
+.B setup.sh
+[\fBinstall\fR|\fBverify\fR|\fBcheck\fR|\fBuninstall\fR|\fBtest\fR|\
+\fBversion\fR]
+.SH DESCRIPTION
+.B wayfire-mods
+builds a complete from-source Wayland compositor stack into a self-contained
+prefix: wlroots (clean upstream), Wayfire (with a small set of patches), wcm,
+wayfire-plugins-extra and wf-info (clean upstream), the filters and pixdecor
+decorators (with patches), and a set of custom Wayfire plugins. The upstream
+components are fetched at pinned refs and assembled onto pristine checkouts, so
+each patch and plugin stays a discrete unit and the base is refreshed by bumping
+a ref rather than by maintaining a fork.
+.PP
+wlroots and Wayfire are ABI-coupled; both, and every satellite, are pinned
+together in
+.IR refs .
+Every installed ELF carries a relative
+.RB ( <prefix>/lib/<arch> )
+rpath, so the prefix resolves with no ld.so.conf entry.
+.SH COMMANDS
+.TP
+.B install
+Build and install the stack into the system prefix (default
+.IR /opt/wayfire ,
+root). Incremental: each component skips when its artifact and stamp are
+current, so a converged prefix is a no-op. Sudo-safe: if the prefix is not
+writable and no non-interactive sudo is available, it skips cleanly rather than
+block on a prompt.
+.TP
+.B verify
+Build into a throwaway prefix and discard it, with no sudo, proving the whole
+stack still fetches, patches, and compiles against the pins without touching the
+real prefix. Run this before bumping an upstream ref.
+.TP
+.B check
+Report whether Wayfire is installed, self-contained by rpath, and its key
+components present, as
+.RB [ OK ]/[ FAIL ]
+markers.
+.TP
+.B uninstall
+Remove the prefix and the build stamps.
+.TP
+.B version
+Print the package version and the wlroots/Wayfire pins.
+.SH FILES
+.TP
+.I refs
+The upstream URLs and pinned refs (wlroots, Wayfire, wcm, plugins-extra,
+filters, wf-info, pixdecor).
+.TP
+.I patches/
+Patches applied onto the Wayfire, filters, and pixdecor checkouts.
+.TP
+.I plugins/
+The custom Wayfire plugins, built against the installed Wayfire.
+.TP
+.I ~/.cache/wayfire-mods/
+The upstream checkouts, build trees, and per-component stamps.
+.SH NOTES
+The greeter/session stack (greetd, the login sway config, swaylock, ReGreet) is
+NOT part of this package; it is wired by the consumer.

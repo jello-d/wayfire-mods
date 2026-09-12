@@ -1,0 +1,25 @@
+diff --git a/src/filters.cpp b/src/filters.cpp
+index baa0cf0..0581f9c 100644
+--- a/src/filters.cpp
++++ b/src/filters.cpp
+@@ -213,6 +213,20 @@ class wf_filters : public wf::scene::view_2d_transformer_t
+                     }
+ 
+                     this->self->shader->uniform4f("margins", margins);
++
++                    // Frame margins: the server-side decoration extent
++                    // (titlebar + border), published separately from `margins`
++                    // so content-scoped shaders (invert, monochrome) can inset
++                    // past the decoration, while silhouette shaders
++                    // (rounded-corners, border) keep reading `margins` and stay
++                    // unchanged. `margins` above is a surface-root/shadow inset
++                    // that reads ~0 for the built-in decoration plugin (whose
++                    // subsurface makes surface-root and geometry coincide); the
++                    // true frame extent lives on the toplevel state.
++                    auto fm = toplevel->toplevel()->current().margins;
++                    this->self->shader->uniform4f("frame_margins",
++                        glm::vec4{(float)fm.left, (float)fm.bottom,
++                            (float)fm.right, (float)fm.top});
+                 }
+ 
+                 GL_CALL(glActiveTexture(GL_TEXTURE0));

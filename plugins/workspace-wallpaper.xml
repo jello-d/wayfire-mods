@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<wayfire>
+  <plugin name="workspace-wallpaper">
+    <_short>Per-workspace wallpaper</_short>
+    <_long>Renders a wallpaper quad per workspace cell as scene content, so
+    expo shows unique wallpapers.</_long>
+    <category>Desktop</category>
+
+    <option name="directory" type="string">
+      <_short>Directory</_short>
+      <_long>Wallpaper directory.</_long>
+      <default>~/.config/wayfire/wallpaper</default>
+    </option>
+
+    <option name="pattern" type="string">
+      <_short>Filename pattern</_short>
+      <_long>Base filename pattern with {x} and {y} placeholders, extension
+      auto-detected.</_long>
+      <default>ws{x}x{y}</default>
+    </option>
+
+    <option name="mode" type="string">
+      <_short>Fit mode</_short>
+      <_long>fill/cover, fit/contain, stretch, center.</_long>
+      <default>fill</default>
+    </option>
+
+    <option name="manifest" type="string">
+      <_short>Manifest file</_short>
+      <_long>Optional path to a coordinate map. Each non-comment line is
+      "x y path"; path is absolute, ~-relative, or relative to directory.
+      Entries here override the directory/pattern probe.</_long>
+      <default></default>
+    </option>
+
+  </plugin>
+</wayfire>

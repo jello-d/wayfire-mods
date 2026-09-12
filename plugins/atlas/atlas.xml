@@ -1,0 +1,101 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="atlas">
+        <_short>Atlas</_short>
+        <_long>Present all outputs as one logical desktop for overview and
+        window switching. Wall shows the global workspace grid; ring and
+        ring_all show every window on the current or all workspaces; switch
+        and switch_all are a cross-output alt+tab.</_long>
+        <category>Desktop</category>
+
+        <group>
+            <_short>Bindings</_short>
+
+            <option name="wall" type="activator">
+                <_short>Global workspace overview</_short>
+                <_long>Toggle the global workspace-grid overview across all
+                outputs.</_long>
+                <default>&lt;super&gt; KEY_E</default>
+            </option>
+
+            <option name="ring" type="activator">
+                <_short>Global window ring (current workspace)</_short>
+                <_long>Toggle a global ring of the windows on the current
+                workspace across all outputs.</_long>
+                <default>&lt;super&gt; KEY_TAB</default>
+            </option>
+
+            <option name="ring_all" type="activator">
+                <_short>Global window ring (all workspaces)</_short>
+                <_long>Toggle a global ring of every window across all
+                workspaces and outputs.</_long>
+                <default>&lt;super&gt; &lt;shift&gt; KEY_TAB</default>
+            </option>
+
+            <option name="switch" type="activator">
+                <_short>Cross-output alt+tab (current workspace)</_short>
+                <_long>Open a held-modifier MRU switcher across all outputs
+                for the current workspace. Hold the modifier and press Tab to
+                cycle (Shift to reverse); release to focus the centred window,
+                Escape to cancel.</_long>
+                <default>&lt;alt&gt; &lt;super&gt; KEY_TAB</default>
+            </option>
+
+            <option name="switch_all" type="activator">
+                <_short>Cross-output alt+tab (all workspaces)</_short>
+                <_long>As switch, but over every window on every workspace
+                and output.</_long>
+                <default>&lt;alt&gt; &lt;super&gt; &lt;ctrl&gt; KEY_TAB</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Appearance</_short>
+
+            <option name="duration" type="animation">
+                <_short>Animation duration</_short>
+                <_long>Length of the open and close animation.</_long>
+                <default>300ms circle</default>
+            </option>
+
+            <option name="background" type="color">
+                <_short>Background color</_short>
+                <_long>Color painted behind the overview (RGBA, 0..1).</_long>
+                <default>0.1 0.1 0.1 1.0</default>
+            </option>
+
+            <option name="inactive_brightness" type="double">
+                <_short>Inactive brightness</_short>
+                <_long>Brightness of non-selected cells or windows
+                (0..1).</_long>
+                <default>0.7</default>
+            </option>
+
+            <option name="gap_size" type="int">
+                <_short>Gap size</_short>
+                <_long>Pixels of gap between cells or windows in the
+                layout.</_long>
+                <default>20</default>
+            </option>
+            <option name="anim_duration" type="int">
+                <_short>Animation duration</_short>
+                <_long>Milliseconds for every atlas open/close animation: the
+                    ring's thumbnails sliding between their real positions and
+                    the grid, and the wall's zoom between the current workspace
+                    and the grid. One global knob for all modes; tunable live
+                    via a config reload.</_long>
+                <default>250</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Debug</_short>
+
+            <option name="debug_log" type="bool">
+                <_short>Enable debug logging</_short>
+                <_long>Log activation and teardown to the session log.</_long>
+                <default>false</default>
+            </option>
+        </group>
+    </plugin>
+</wayfire>

@@ -1,0 +1,37 @@
+diff --git a/plugins/ipc-rules/ipc-rules.cpp b/plugins/ipc-rules/ipc-rules.cpp
+index d38f7f11..f15bc613 100644
+--- a/plugins/ipc-rules/ipc-rules.cpp
++++ b/plugins/ipc-rules/ipc-rules.cpp
+@@ -206,6 +206,12 @@ class ipc_rules_t : public wf::plugin_interface_t,
+                 return wf::ipc::json_error("output not found");
+             }
+ 
++            if (toplevel->parent)
++            {
++                return wf::ipc::json_error(
++                    "cannot move a child/dialog view to a different output");
++            }
++
+             wf::move_view_to_output(toplevel, wo, !data.has_member("geometry"));
+         }
+ 
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 14f6e617..314d9c1f 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -617,7 +617,14 @@ void wf::move_view_to_output(wayfire_toplevel_view v, wf::output_t *new_output,
+         return;
+     }
+ 
+-    wf::dassert(!v->parent, "Cannot move a dialog to a different output than its parent!");
++    // A child/dialog view must stay on its parent's output. Refuse the move
++    // rather than abort the whole compositor on a bad request (tackup hardening
++    // patch: build/patches/wayfire-ipc-guard-dialog-output.patch).
++    if (v->parent)
++    {
++        LOGE("move_view_to_output: refusing to move a dialog off its parent's output");
++        return;
++    }
+ 
+     auto old_output = v->get_output();
+     auto old_wset   = v->get_wset();

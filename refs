@@ -1,0 +1,32 @@
+# wayfire-mods/refs - the upstream components this compositor stack is pinned to
+# and tested against, and their dependency ABI lockstep. wlroots and wayfire are
+# ABI-coupled (this wlroots is what this wayfire links), so they are pinned
+# together HERE, in one place; every satellite links the wayfire/wlroots ABI, so
+# a wlroots or wayfire bump rebuilds them all (the build recipe folds those refs
+# into each satellite's stamp). Bump a REF only after `setup.sh verify` proves
+# the whole stack still builds against it.
+#
+# wlroots is CLEAN upstream (no patch). wayfire, filters, and pixdecor carry our
+# patches (patches/); wcm, plugins-extra, and wf-info are clean upstream.
+# Our own plugins live in plugins/ (built against the installed wayfire).
+
+WLROOTS_URL=https://gitlab.freedesktop.org/wlroots/wlroots
+WLROOTS_REF=0.20.2
+
+WAYFIRE_URL=https://github.com/WayfireWM/wayfire
+WAYFIRE_REF=d3990237
+
+WCM_URL=https://github.com/WayfireWM/wcm
+WCM_REF=14f2e03fc4bfa3a20d10b913461636363e39240c
+
+PLUGINS_EXTRA_URL=https://github.com/WayfireWM/wayfire-plugins-extra
+PLUGINS_EXTRA_REF=4290ddf13bfadb344d45cb25c47f7825bbdc8a30
+
+FILTERS_URL=https://github.com/soreau/filters
+FILTERS_REF=8fcaad8192a2be0566a624cfdb20bb101f0d5ca2
+
+WF_INFO_URL=https://github.com/soreau/wf-info
+WF_INFO_REF=2d0127a484f332ffaf1c64a7be199f755d4f68a8
+
+PIXDECOR_URL=https://github.com/soreau/pixdecor
+PIXDECOR_REF=76a0e8996b41f0df87f0d9c65c816693f1c3fefc

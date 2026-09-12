@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="wsync">
+        <_short>Workspace Sync</_short>
+        <_long>Keep every output on the same workspace. When any output
+        changes workspace by any mechanism (edge flipping, expo selection,
+        vswitch, grid, or a raw IPC request), all other outputs are driven to
+        the same viewport, so independent workspace sets move in lockstep.
+        Disable to let outputs hold different workspaces, for example during a
+        presentation.</_long>
+        <category>Desktop</category>
+
+        <group>
+            <_short>Behavior</_short>
+
+            <option name="enabled" type="bool">
+                <_short>Enable workspace sync</_short>
+                <_long>Mirror every output's workspace changes onto all other
+                outputs. Set false to let outputs move independently
+                (re-attaches live when set true again).</_long>
+                <default>true</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Debug</_short>
+
+            <option name="debug_log" type="bool">
+                <_short>Enable debug logging</_short>
+                <_long>Log workspace-sync mirror operations to journal.</_long>
+                <default>false</default>
+            </option>
+        </group>
+    </plugin>
+</wayfire>

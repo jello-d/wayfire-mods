@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="edge-flipping">
+        <_short>Edge Flipping</_short>
+        <_long>Flip workspaces by moving cursor to screen edges. Uses
+        approach velocity detection to prevent accidental flips during careful
+        edge work. Supports diagonal corner flips and optional repeat-on-hold
+        for traversing multiple workspaces.</_long>
+        <category>Navigation</category>
+
+        <group>
+            <_short>Trigger Zones</_short>
+
+            <option name="edge_px" type="int">
+                <_short>Edge trigger zone (pixels)</_short>
+                <_long>Distance from screen edge that triggers a flip.
+                Smaller values require more precise edge targeting.</_long>
+                <default>2</default>
+                <min>1</min>
+                <max>50</max>
+            </option>
+
+            <option name="approach_zone_px" type="int">
+                <_short>Approach zone (pixels)</_short>
+                <_long>Outer zone for velocity detection. Cursor must
+                traverse from outside this zone to the edge zone within
+                max_approach_ms to trigger a flip. Set equal to edge_px to
+                disable velocity detection.</_long>
+                <default>30</default>
+                <min>0</min>
+                <max>500</max>
+            </option>
+        </group>
+
+        <group>
+            <_short>Timing</_short>
+
+            <option name="max_approach_ms" type="int">
+                <_short>Max approach time (ms)</_short>
+                <_long>Maximum time allowed to traverse from approach zone
+                entry to edge. If exceeded, flip is disarmed until cursor
+                leaves the approach zone entirely. Prevents accidental flips
+                from slow cursor movement near edges.</_long>
+                <default>150</default>
+                <min>5</min>
+                <max>2000</max>
+            </option>
+
+            <option name="check_interval_ms" type="int">
+                <_short>Check interval (ms)</_short>
+                <_long>Motion event throttle interval in milliseconds. Set
+                to 0 (default) to auto-compute as max_approach_ms/10, ensuring
+                enough samples to measure approach velocity accurately. Set to
+                a positive value to override explicitly.</_long>
+                <default>0</default>
+                <min>0</min>
+                <max>100</max>
+            </option>
+        </group>
+
+        <group>
+            <_short>Behavior</_short>
+            <option name="enable_pointer_flip" type="bool">
+                <_short>Enable pointer-only flipping</_short>
+                <_long>Allow flipping by moving cursor to edge (no window
+                drag required).</_long>
+                <default>false</default>
+            </option>
+
+            <option name="enable_move_flip" type="bool">
+                <_short>Enable move/drag flipping</_short>
+                <_long>Allow flipping while dragging a window to screen
+                edge.</_long>
+                <default>true</default>
+            </option>
+
+            <option name="wrap" type="bool">
+                <_short>Wrap around</_short>
+                <_long>Wrap from last workspace to first (and vice
+                versa).</_long>
+                <default>true</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Modifier Key</_short>
+
+            <option name="require_modifier" type="bool">
+                <_short>Require modifier key</_short>
+                <_long>Only flip when specified modifier key(s) are
+                held.</_long>
+                <default>false</default>
+            </option>
+
+            <option name="modifier" type="string">
+                <_short>Modifier(s)</_short>
+                <_long>Required modifier(s): &lt;shift&gt; &lt;ctrl&gt;
+                &lt;alt&gt; &lt;super&gt;</_long>
+                <default>&lt;super&gt;</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Debug</_short>
+
+            <option name="debug_log" type="bool">
+                <_short>Enable debug logging</_short>
+                <_long>Log edge-flipping events to journal.</_long>
+                <default>false</default>
+            </option>
+        </group>
+    </plugin>
+</wayfire>

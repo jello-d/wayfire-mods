@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="directional-focus">
+        <_short>Directional Focus</_short>
+        <_long>Move keyboard focus to the nearest window in a direction,
+        treating all outputs as one logical desktop. Only windows on the
+        current workspace are considered; focus never wraps and never changes
+        workspace, but it will cross a monitor boundary when the nearest window
+        in that direction is on another output.</_long>
+        <category>Desktop</category>
+
+        <group>
+            <_short>Bindings</_short>
+
+            <option name="focus_left" type="activator">
+                <_short>Focus window to the left</_short>
+                <_long>Move keyboard focus to the nearest window left of the
+                focused one.</_long>
+                <default>&lt;super&gt; &lt;ctrl&gt; KEY_LEFT</default>
+            </option>
+
+            <option name="focus_right" type="activator">
+                <_short>Focus window to the right</_short>
+                <_long>Move keyboard focus to the nearest window right of the
+                focused one.</_long>
+                <default>&lt;super&gt; &lt;ctrl&gt; KEY_RIGHT</default>
+            </option>
+
+            <option name="focus_up" type="activator">
+                <_short>Focus window above</_short>
+                <_long>Move keyboard focus to the nearest window above the
+                focused one.</_long>
+                <default>&lt;super&gt; &lt;ctrl&gt; KEY_UP</default>
+            </option>
+
+            <option name="focus_down" type="activator">
+                <_short>Focus window below</_short>
+                <_long>Move keyboard focus to the nearest window below the
+                focused one.</_long>
+                <default>&lt;super&gt; &lt;ctrl&gt; KEY_DOWN</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Behavior</_short>
+
+            <option name="perp_weight" type="double">
+                <_short>Cross-axis penalty</_short>
+                <_long>How strongly to prefer a window level with the travel
+                direction over one nearer but offset sideways. 1.0 treats both
+                axes equally; higher values keep focus travelling straighter.
+                Never selects a window behind the source.</_long>
+                <default>2.0</default>
+            </option>
+        </group>
+
+        <group>
+            <_short>Debug</_short>
+
+            <option name="debug_log" type="bool">
+                <_short>Enable debug logging</_short>
+                <_long>Log each focus move to the journal.</_long>
+                <default>false</default>
+            </option>
+        </group>
+    </plugin>
+</wayfire>

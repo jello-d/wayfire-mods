@@ -1,0 +1,215 @@
+diff --git a/metadata/core.xml b/metadata/core.xml
+index 6bb03af7..1b60e936 100644
+--- a/metadata/core.xml
++++ b/metadata/core.xml
+@@ -32,6 +32,11 @@
+ 			<_long>Sets the background color of workspaces.  Visible when nothing is drawing the background.</_long>
+ 			<default>0.1 0.1 0.1 1.0</default>
+ 		</option>
++		<option name="startup_image" type="string">
++			<_short>Startup image</_short>
++			<_long>Path to a binary PPM (P6) shown on every output from the first mode-set frame until the first real composite, so startup shows this instead of black while plugins load.  Empty disables it.</_long>
++			<default></default>
++		</option>
+ 		<option name="preferred_decoration_mode" type="string">
+ 			<_short>Preferred decoration mode</_short>
+ 			<_long>Sets the preferred window decoration mode.  Possible values are `client` and `server`.  `client` allows the client to draw its own decorations.</_long>
+diff --git a/src/main.cpp b/src/main.cpp
+index a1edd55b..930a0fad 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -16,6 +16,183 @@
+ #include "core/plugin-loader.hpp"
+ #include "core/core-impl.hpp"
+ #include <wayfire/nonstd/wlroots.hpp>
++#include <wayfire/nonstd/wlroots-full.hpp>
++#include <wayfire/option-wrapper.hpp>
++#include <drm_fourcc.h>
++#include <cctype>
++#include <fstream>
++#include <string>
++#include <vector>
++
++// Paint a configurable image onto every output as the FIRST on-screen content,
++// so startup shows it instead of the black empty-buffer wlroots attaches at
++// modeset (types/output/render.c) while the ~40-plugin load runs synchronously
++// before the event loop's first composite. Called once, after the outputs are
++// mode-set (wlr_backend_start) and before core.post_init() loads plugins -- so
++// it costs one texture upload + one commit per output (microseconds) and is
++// transparently overdrawn by the wallpaper on the first real frame.
++//
++// The image is a binary PPM (P6): a trivial self-describing header keeps this
++// core hook dependency-free (no libjpeg/libpng/stb) and renderer-agnostic (we
++// hand raw pixels to wlr_texture_from_pixels, so it works under GLES2 OR
++// Vulkan). The path comes from core/startup_image; empty disables it.
++static void paint_startup_image()
++{
++    // Source the path from the env FIRST (startwayfire exports it before launch,
++    // so it is reliably present this early in startup), then fall back to the
++    // config option core/startup_image.
++    std::string path;
++    if (const char *env = getenv("WAYFIRE_STARTUP_IMAGE"))
++    {
++        path = env;
++    }
++
++    if (path.empty())
++    {
++        wf::option_wrapper_t<std::string> image_opt;
++        image_opt.load_option("core/startup_image");
++        std::string cfg = image_opt;
++        path = cfg;
++    }
++
++    LOGI("startup_image: resolved path = '", path, "'");
++    if (path.empty())
++    {
++        return;
++    }
++
++    if ((path.size() >= 2) && (path[0] == '~') && (path[1] == '/'))
++    {
++        if (const char *home = getenv("HOME"))
++        {
++            path = std::string(home) + path.substr(1);
++        }
++    }
++
++    std::ifstream in(path, std::ios::binary);
++    if (!in)
++    {
++        LOGE("startup_image: cannot open ", path);
++        return;
++    }
++
++    // Read the PPM header, tolerating '#' comment lines (ImageMagick, GIMP and
++    // others emit them): magic "P6", then width, height, maxval. next_uint
++    // skips whitespace and comments and consumes the single delimiter after the
++    // number it reads -- so after maxval the stream sits at the first pixel.
++    auto next_uint = [&in]() -> long
++    {
++        int c = in.get();
++        while ((c != EOF) && (isspace(c) || (c == '#')))
++        {
++            if (c == '#')
++            {
++                while (((c = in.get()) != '\n') && (c != EOF))
++                {}
++            }
++
++            c = in.get();
++        }
++
++        if (!isdigit(c))
++        {
++            return -1;
++        }
++
++        long v = 0;
++        do
++        {
++            v = (v * 10) + (c - '0');
++            c = in.get();
++        } while (isdigit(c));
++        return v;
++    };
++
++    std::string magic;
++    in >> magic;
++    long w = next_uint(), h = next_uint(), maxval = next_uint();
++    if ((magic != "P6") || (w <= 0) || (h <= 0) || (maxval != 255))
++    {
++        LOGE("startup_image: not a binary 8-bit PPM (P6): ", path);
++        return;
++    }
++    LOGI("startup_image: PPM ", w, "x", h, " parsed");
++    std::vector<unsigned char> rgb((size_t)w * h * 3);
++    in.read(reinterpret_cast<char*>(rgb.data()), rgb.size());
++    if (!in)
++    {
++        LOGE("startup_image: short read: ", path);
++        return;
++    }
++
++    // wlr_texture_from_pixels wants a 32-bit format; expand RGB -> RGBA opaque.
++    std::vector<unsigned char> rgba((size_t)w * h * 4);
++    for (size_t i = 0, n = (size_t)w * h; i < n; i++)
++    {
++        rgba[i * 4 + 0] = rgb[i * 3 + 0];
++        rgba[i * 4 + 1] = rgb[i * 3 + 1];
++        rgba[i * 4 + 2] = rgb[i * 3 + 2];
++        rgba[i * 4 + 3] = 255;
++    }
++
++    auto& core = wf::get_core();
++    wlr_texture *texture = wlr_texture_from_pixels(core.renderer,
++        DRM_FORMAT_ABGR8888, (uint32_t)(w * 4), (uint32_t)w, (uint32_t)h,
++        rgba.data());
++    if (!texture)
++    {
++        LOGE("startup_image: texture upload failed");
++        return;
++    }
++
++    // Commit the texture fullscreen on every output, mirroring the proven
++    // one-shot path in output-layout.cpp render_output().
++    auto outputs = core.output_layout->get_outputs();
++    LOGI("startup_image: painting ", outputs.size(), " output(s)");
++    for (auto *wo : outputs)
++    {
++        wlr_output *handle = wo->handle;
++        wlr_output_state state;
++        wlr_output_state_init(&state);
++
++        // Commit as a MODESET (set the unchanged current mode), not a bare
++        // page-flip: at startup a page-flip is still pending from wayfire's
++        // initial modeset and wlroots rejects a second one ("already pending").
++        // A state carrying WLR_OUTPUT_STATE_MODE takes the atomic-modeset path,
++        // which supersedes the pending flip and presents our buffer at once.
++        if (handle->current_mode)
++        {
++            wlr_output_state_set_mode(&state, handle->current_mode);
++        }
++
++        wlr_render_pass *pass =
++            wlr_output_begin_render_pass(handle, &state, NULL);
++        if (!pass)
++        {
++            LOGE("startup_image: ", handle->name, " begin_render_pass NULL");
++            wlr_output_state_finish(&state);
++            continue;
++        }
++
++        wlr_render_texture_options opts{};
++        opts.texture     = texture;
++        opts.blend_mode  = WLR_RENDER_BLEND_MODE_NONE;
++        opts.filter_mode = WLR_SCALE_FILTER_BILINEAR;
++        opts.src_box     = {0, 0, 0, 0};
++        opts.dst_box     = {0, 0, (int)handle->width, (int)handle->height};
++        opts.transform   = WL_OUTPUT_TRANSFORM_NORMAL;
++        wlr_render_pass_add_texture(pass, &opts);
++
++        bool submitted = wlr_render_pass_submit(pass);
++        bool committed = submitted && wlr_output_commit_state(handle, &state);
++        LOGI("startup_image: ", handle->name, " submit=", submitted,
++            " commit=", committed);
++
++        wlr_output_state_finish(&state);
++    }
++
++    wlr_texture_destroy(texture);
++}
+ 
+ static std::string get_version_string()
+ {
+@@ -509,6 +686,10 @@ int main(int argc, char *argv[])
+     }
+ 
+     setenv("WAYLAND_DISPLAY", core.wayland_display.c_str(), 1);
++    // Paint the startup image NOW -- outputs are mode-set but plugins have not
++    // loaded yet, so this replaces the black modeset buffer for the whole
++    // plugin-load window (see paint_startup_image above).
++    paint_startup_image();
+     core.post_init();
+ 
+     wl_display_run(core.display);

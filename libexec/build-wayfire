@@ -1,0 +1,213 @@
+#!/bin/sh
+# build-wayfire <prefix> - build our from-source Wayland compositor stack into
+# <prefix> and install it there: wlroots (clean upstream) -> wayfire (+ our
+# patches) -> wcm / wayfire-plugins-extra / wf-info (clean) + filters / pixdecor
+# (+ our patches) + our own plugins. The whole recipe, reused by
+# `setup.sh install` (prefix = /opt/wayfire, sudo) and `setup.sh verify`
+# (prefix = a throwaway dir, no sudo), so the real build and CI take the SAME
+# path.
+#
+# rpath: every installed ELF carries a DT_RUNPATH of <prefix>/lib/<arch>
+# (LDFLAGS at meson setup, kept through install), so the prefix is self-
+# contained with no ld.so.conf entry. A build-time gate at the end fails loud if
+# any ELF lacks it. wlroots' vendored wraps and wayfire's own subproject libs
+# are forced to rebuild from source (their stale prefix .pc removed first), so
+# they too pick up the rpath rather than shadow it with a pre-installed copy.
+#
+# INCREMENTAL: each component skips when its install artifact is present AND its
+# stamp (its pinned ref, plus the wlroots/wayfire refs it links, plus local
+# patch/plugin content) is unchanged. Stamps live in the package cache, so a
+# converged prefix is a seconds-long no-op. Set WBM_NOSTAMP=1 (verify does) to
+# never record a stamp, so a throwaway build cannot make a real build skip.
+#
+# Needs: git, meson, ninja, gcc/g++, and the wlroots/wayfire build libs (the
+# consumer declares those). Fails loud via meson if a lib is missing.
+set -eu
+
+PREFIX=${1:?usage: build-wayfire <prefix>}
+: "${WBM_ROOT:?WBM_ROOT (the wayfire-mods repo root) must be set}"
+. "$WBM_ROOT/refs"
+
+CACHE=${WBM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wayfire-mods}
+SRC=$CACHE/srcs
+STAMPS=$CACHE/stamps
+JOBS=$(nproc 2>/dev/null || echo 4)
+ARCH=$(cc -dumpmachine 2>/dev/null || gcc -dumpmachine 2>/dev/null \
+       || echo x86_64-linux-gnu)
+LIBDIR=$PREFIX/lib/$ARCH
+PATCHES=$WBM_ROOT/patches
+PLUGINS=$WBM_ROOT/plugins
+
+# Anonymous public clones: keep a login user's insteadOf-ssh git identity from
+# turning these https clones into ssh ones that die on a fresh box.
+export GIT_CONFIG_GLOBAL=/dev/null
+# Chain every later build onto the prefix we are populating.
+export PKG_CONFIG_PATH="$LIBDIR/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+mkdir -p "$CACHE" "$SRC" "$STAMPS"
+cd "$CACHE"   # meson realpaths the CWD; keep it a dir that exists
+
+# Decide privilege from the target: a writable (or creatable) prefix is the
+# user's; anything else is a system prefix that must go under sudo.
+SUDO=sudo
+if [ -w "$PREFIX" ]; then SUDO=""
+elif [ ! -e "$PREFIX" ] && mkdir -p "$PREFIX" 2>/dev/null; then SUDO=""
+fi
+[ -z "$SUDO" ] || sudo mkdir -p "$PREFIX"
+
+say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
+
+# --- incremental gating -----------------------------------------------------
+hash_of() { cksum | awk '{print $1"-"$2}'; }
+pin() { printf '%s\n' "$@" | hash_of; }
+in_sync() {   # <name> <want> <artifact>  -> 0 (skip) if built and current
+  [ -e "$3" ] && [ -r "$STAMPS/$1.stamp" ] \
+    && [ "$(cat "$STAMPS/$1.stamp" 2>/dev/null)" = "$2" ]
+}
+mark() {   # <name> <want>  -- WBM_NOSTAMP (verify) never records
+  [ -n "${WBM_NOSTAMP:-}" ] && return 0
+  printf '%s\n' "$2" > "$STAMPS/$1.stamp"
+}
+
+fetch() {   # <name> <url> <ref>  -> populate $SRC/<name> at <ref>
+  _n=$1; _u=$2; _r=$3; _d=$SRC/$_n
+  [ -d "$_d/.git" ] || git clone --recurse-submodules "$_u" "$_d"
+  git -C "$_d" fetch --tags --no-recurse-submodules --force origin
+  git -C "$_d" checkout -f "$_r"
+  git -C "$_d" submodule update --init --recursive
+}
+
+build() {   # <srcdir> [meson args...]  -> install into $PREFIX
+  _dir=$1; shift
+  _tag=${_dir#"$SRC"/}; _tag=${_tag#"$PLUGINS"}; _tag=${_tag:-plugins}
+  _bdir=$SRC/_build/$(printf '%s' "$_tag" | tr / -)
+  rm -rf "$_bdir"
+  LDFLAGS="-Wl,-rpath,$LIBDIR${LDFLAGS:+ $LDFLAGS}" \
+    meson setup "$_bdir" "$_dir" --prefix="$PREFIX" \
+      -Dwerror=false -Dc_args=-Wno-error -Dcpp_args=-Wno-error "$@"
+  ninja -C "$_bdir" -j "$JOBS"
+  $SUDO meson install -C "$_bdir"
+}
+
+staged() {   # <name> <want> <artifact> <src> <url> <ref> [meson args...]
+  _sn=$1; _sw=$2; _sa=$3; _ss=$4; _su=$5; _sr=$6; shift 6
+  if in_sync "$_sn" "$_sw" "$_sa"; then echo "  $_sn in sync ($_sr)"; return 0
+  fi
+  fetch "$_ss" "$_su" "$_sr"; build "$SRC/$_ss" "$@"; mark "$_sn" "$_sw"
+}
+
+# _patched <name> <artifact> <src> <url> <ref> <patch>...: fetch, reset to
+# pristine, apply each patch (fail loud on drift), build -Dbuildtype=release.
+# The pin folds in every patch's content, so editing a patch forces a rebuild.
+_patched() {
+  _pn=$1; _pa=$2; _ps=$3; _pu=$4; _pr=$5; shift 5
+  _pw=$(pin "$_pr" "$WAYFIRE_REF" "$WLROOTS_REF" \
+    "$(for _p in "$@"; do cat "$PATCHES/$_p"; done)")
+  if in_sync "$_pn" "$_pw" "$_pa"; then echo "  $_pn in sync ($_pr)"; return 0
+  fi
+  fetch "$_ps" "$_pu" "$_pr"
+  git -C "$SRC/$_ps" reset --hard "$_pr" >/dev/null
+  for _p in "$@"; do
+    ( cd "$SRC/$_ps" && git apply --check "$PATCHES/$_p" \
+        && git apply "$PATCHES/$_p" ) || {
+      echo "build: $_p did not apply ($_ps drift from $_pr?)" >&2; return 1; }
+  done
+  build "$SRC/$_ps" -Dbuildtype=release
+  mark "$_pn" "$_pw"
+}
+
+# --- wlroots: clean upstream, standalone ------------------------------------
+say "wlroots $WLROOTS_REF (clean upstream)"
+_w=$(pin "$WLROOTS_REF")
+if in_sync wlroots "$_w" "$LIBDIR/libwlroots-0.20.so"; then
+  echo "  wlroots in sync ($WLROOTS_REF)"
+else
+  fetch wlroots "$WLROOTS_URL" "$WLROOTS_REF"
+  # wlroots vendors libdisplay-info/libliftoff as wraps (apt's are too old); a
+  # stale prefix .pc shadows the wrap, so drop it to force a rebuild with rpath.
+  for _pc in libdisplay-info libliftoff; do
+    $SUDO rm -f "$LIBDIR/pkgconfig/$_pc.pc"
+  done
+  build "$SRC/wlroots" -Dxwayland=enabled -Dexamples=false
+  mark wlroots "$_w"
+fi
+
+# --- wayfire: our patches ----------------------------------------------------
+say "wayfire $WAYFIRE_REF (+ our patches)"
+_w=$(pin "$WAYFIRE_REF" "$WLROOTS_REF" \
+  "$(cat "$PATCHES"/wayfire-ipc-guard-dialog-output.patch \
+        "$PATCHES"/wayfire-startup-image.patch \
+        "$PATCHES"/wayfire-scale-clamp.patch)")
+if in_sync wayfire "$_w" "$PREFIX/bin/wayfire"; then
+  echo "  wayfire in sync ($WAYFIRE_REF)"
+else
+  fetch wayfire "$WAYFIRE_URL" "$WAYFIRE_REF"
+  git -C "$SRC/wayfire" reset --hard "$WAYFIRE_REF" >/dev/null
+  for _p in wayfire-ipc-guard-dialog-output wayfire-startup-image \
+            wayfire-scale-clamp; do
+    ( cd "$SRC/wayfire" && git apply --check "$PATCHES/$_p.patch" \
+        && git apply "$PATCHES/$_p.patch" ) || {
+      echo "build: $_p did not apply (wayfire drift from $WAYFIRE_REF?)" >&2
+      return 1; }
+  done
+  # Use the standalone wlroots above, not wayfire's bundled subproject.
+  rm -rf "$SRC/wayfire/subprojects/wlroots"
+  # Force wayfire's own vendored subproject libs to rebuild (drop their stale
+  # prefix .pc so meson does not resolve them externally and skip the rebuild).
+  for _pc in wf-config wf-utils wf-touch wf-json; do
+    $SUDO rm -f "$LIBDIR/pkgconfig/$_pc.pc"
+  done
+  build "$SRC/wayfire"
+  mark wayfire "$_w"
+fi
+
+# --- wcm / plugins-extra: clean upstream ------------------------------------
+say "wcm $WCM_REF"
+staged wcm "$(pin "$WCM_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+  "$PREFIX/bin/wcm" wcm "$WCM_URL" "$WCM_REF"
+
+say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (clean upstream)"
+staged plugins-extra \
+  "$(pin "$PLUGINS_EXTRA_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+  "$LIBDIR/wayfire/libwater.so" \
+  plugins-extra "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF"
+
+# --- our own plugins ---------------------------------------------------------
+say "custom plugins (edge-flipping, workspace-wallpaper, wsync, atlas, ...)"
+_w=$( { printf '%s\n' "$WAYFIRE_REF" "$WLROOTS_REF"; \
+        find "$PLUGINS" -type f \( -name '*.cpp' -o -name '*.hpp' \
+          -o -name '*.h' -o -name '*.xml' -o -name 'meson.build' \) \
+          | sort | xargs cat; } | hash_of )
+if in_sync plugins-custom "$_w" "$LIBDIR/wayfire/libedge-flipping.so"; then
+  echo "  custom plugins in sync"
+else
+  build "$PLUGINS"
+  mark plugins-custom "$_w"
+fi
+
+# --- filters / pixdecor: our patches; wf-info: clean ------------------------
+say "filters $FILTERS_REF (+ our patch)"
+_patched filters "$LIBDIR/wayfire/libfilters.so" filters \
+  "$FILTERS_URL" "$FILTERS_REF" filters-frame-margins.patch
+
+say "wf-info $WF_INFO_REF"
+staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+  "$PREFIX/bin/wf-info" wf-info "$WF_INFO_URL" "$WF_INFO_REF"
+
+say "pixdecor $PIXDECOR_REF (+ our patch)"
+_patched pixdecor "$LIBDIR/wayfire/libpixdecor.so" pixdecor \
+  "$PIXDECOR_URL" "$PIXDECOR_REF" pixdecor-titlebar-padding.patch
+
+# --- assert the prefix is self-contained by rpath ---------------------------
+_missing=0
+_sos=$(find "$LIBDIR" -name '*.so*' -type f 2>/dev/null)
+for _f in "$PREFIX"/bin/* $_sos; do
+  [ -f "$_f" ] || continue
+  readelf -h "$_f" >/dev/null 2>&1 || continue
+  if ! readelf -d "$_f" 2>/dev/null | grep -E 'RUNPATH|RPATH' \
+       | grep -qF "$LIBDIR"; then
+    echo "  MISSING rpath: $_f"; _missing=1
+  fi
+done
+[ "$_missing" = 0 ] || { echo "prefix not self-contained by rpath"; exit 1; }
+echo "wayfire-mods: compositor stack built + installed -> $PREFIX"

@@ -1,0 +1,23 @@
+diff --git a/src/core/output-layout.cpp b/src/core/output-layout.cpp
+index aa0f9ae0..bae58cb1 100644
+--- a/src/core/output-layout.cpp
++++ b/src/core/output-layout.cpp
+@@ -117,6 +117,18 @@ wl_output_transform wf::layout_detail::get_transform_from_string(std::string_vie
+  */
+ float round_scale_to_1_120(float scale)
+ {
++    // Floor output scale at 1: never downscale. A scale < 1 enlarges the
++    // logical space past the panel, so the compositor downsamples -> soft,
++    // bit-mashed text; scale 1 is native/crisp (the fixed-pixel UI is sized
++    // for the design panel; wb templates the bar per panel, not shrink it).
++    // The floor also fixes a crash: with use_external_output_configuration
++    // = true a new output takes scale 0 from the yet-unapplied kanshi head,
++    // and wlroots asserts scale > 0 -> SIGABRT on the first surface. Scale
++    // >= 1 (a genuine HiDPI 2x panel) passes through unchanged.
++    if (scale < 1.0f)
++    {
++        scale = 1.0f;
++    }
+     int numerator = std::round(scale * 120);
+     return numerator / 120.0f;
+ }
