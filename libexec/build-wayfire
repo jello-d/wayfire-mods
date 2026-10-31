@@ -29,6 +29,12 @@ PREFIX=${1:?usage: build-wayfire <prefix>}
 . "$WBM_ROOT/refs"
 
 CACHE=${WBM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wayfire-mods}
+# Every tree this recipe removes (build dirs, the bundled wlroots) sits under
+# CACHE, which comes from the environment: check it once before any of them.
+case $CACHE in
+/*/*) ;;
+*) echo "build: refusing a cache root of '$CACHE'" >&2; exit 1 ;;
+esac
 SRC=$CACHE/srcs
 STAMPS=$CACHE/stamps
 JOBS=$(nproc 2>/dev/null || echo 4)
@@ -64,7 +70,7 @@ in_sync() {   # <name> <want> <artifact>  -> 0 (skip) if built and current
   [ -e "$3" ] && [ -r "$STAMPS/$1.stamp" ] \
     && [ "$(cat "$STAMPS/$1.stamp" 2>/dev/null)" = "$2" ]
 }
-mark() {   # <name> <want>  -- WBM_NOSTAMP (verify) never records
+mark() {   # <name> <want>: WBM_NOSTAMP (verify) never records
   [ -n "${WBM_NOSTAMP:-}" ] && return 0
   printf '%s\n' "$2" > "$STAMPS/$1.stamp"
 }
@@ -81,7 +87,7 @@ build() {   # <srcdir> [meson args...]  -> install into $PREFIX
   _dir=$1; shift
   _tag=${_dir#"$SRC"/}; _tag=${_tag#"$PLUGINS"}; _tag=${_tag:-plugins}
   _bdir=$SRC/_build/$(printf '%s' "$_tag" | tr / -)
-  rm -rf "$_bdir"
+  rm -rf -- "$_bdir"
   LDFLAGS="-Wl,-rpath,$LIBDIR${LDFLAGS:+ $LDFLAGS}" \
     meson setup "$_bdir" "$_dir" --prefix="$PREFIX" \
       -Dwerror=false -Dc_args=-Wno-error -Dcpp_args=-Wno-error "$@"
@@ -148,10 +154,10 @@ else
     ( cd "$SRC/wayfire" && git apply --check "$PATCHES/$_p.patch" \
         && git apply "$PATCHES/$_p.patch" ) || {
       echo "build: $_p did not apply (wayfire drift from $WAYFIRE_REF?)" >&2
-      return 1; }
+      exit 1; }
   done
   # Use the standalone wlroots above, not wayfire's bundled subproject.
-  rm -rf "$SRC/wayfire/subprojects/wlroots"
+  rm -rf -- "$SRC/wayfire/subprojects/wlroots"
   # Force wayfire's own vendored subproject libs to rebuild (drop their stale
   # prefix .pc so meson does not resolve them externally and skip the rebuild).
   for _pc in wf-config wf-utils wf-touch wf-json; do

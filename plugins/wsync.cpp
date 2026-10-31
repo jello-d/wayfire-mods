@@ -5,19 +5,19 @@
 //
 // With independent workspace sets (Wayfire's default; no [wsets] config) each
 // output flips in isolation. wsync makes the array move as one: when ANY output
-// changes workspace -- by any mechanism, edge-flip, expo selection, vswitch,
-// grid, or a raw IPC request_workspace -- every other output's wset is driven
+// changes workspace, by any mechanism, edge-flip, expo selection, vswitch,
+// grid, or a raw IPC request_workspace, every other output's wset is driven
 // to the same viewport. Coordination lives here, at the workspace-change layer,
 // so no trigger has to know about it: the invariant is enforced in one place.
 //
 // REENTRANCY. Applying the mirror calls request_workspace() on the other wsets,
 // which itself emits workspace_changed on those outputs and re-enters this
 // handler. Two independent guards make that safe:
-//   1. g_syncing -- a plugin-wide flag (all instances share it; same .so)
+//   1. g_syncing: a plugin-wide flag (all instances share it; same .so)
 //      bracketing the whole mirror pass. Re-entrant emissions land while it is
 //      set and bail immediately. This is the primary guard and assumes the
 //      emission is synchronous within request_workspace().
-//   2. the "already at target" short-circuit -- even if an emission is instead
+//   2. the "already at target" short-circuit: even if an emission is instead
 //      delivered deferred (after g_syncing clears), the wset state was already
 //      moved synchronously by request_workspace(), so every output reads
 //      current == target and the pass changes nothing and emits nothing

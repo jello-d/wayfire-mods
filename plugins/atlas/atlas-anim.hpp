@@ -14,7 +14,7 @@
 //     output damages the whole output every frame while the clock runs. When
 //     the close settles, on_done fires EXACTLY once.
 //   - on_done fires synchronously from inside that render hook, so it MUST NOT
-//     destroy this driver -- that would rem_effect the very hook we are in. The
+//     destroy this driver: that would rem_effect the very hook we are in. The
 //     caller only arms an idle from on_done and tears down there (see atlas.cpp
 //     exit_mode). The destructor is the instant teardown for the cancel path
 //     (desktop lock), which never animates.
@@ -63,7 +63,7 @@ class anim_driver_t
     }
 
     // Install the frame pump WITHOUT running an animation (progress stays at
-    // its settled 1.0). For a driver used as a re-triggerable tween -- arm()
+    // its settled 1.0). For a driver used as a re-triggerable tween: arm()
     // once, then restart() on each new target.
     void arm()
     {

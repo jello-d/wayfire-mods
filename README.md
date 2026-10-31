@@ -14,15 +14,15 @@ rather than by rebasing a divergent tree.
 
 ## Layout
 
-- `refs` — the upstream URLs + pinned refs. wlroots and Wayfire are ABI-coupled
+- `refs`: the upstream URLs + pinned refs. wlroots and Wayfire are ABI-coupled
   and pinned together here; every satellite links that ABI, so a wlroots or
   Wayfire bump rebuilds them all.
-- `patches/` — patches for Wayfire (ipc-guard, startup-image, scale-clamp),
+- `patches/`: patches for Wayfire (ipc-guard, startup-image, scale-clamp),
   filters (frame-margins), and pixdecor (titlebar-padding). wlroots, wcm,
   plugins-extra, and wf-info are clean upstream (no patch).
-- `plugins/` — the custom Wayfire plugins (edge-flipping, workspace-wallpaper,
+- `plugins/`: the custom Wayfire plugins (edge-flipping, workspace-wallpaper,
   wsync, directional-focus, atlas, ...), a self-contained meson project.
-- `libexec/build-wayfire` — the whole build recipe (fetch, patch, build in
+- `libexec/build-wayfire`: the whole build recipe (fetch, patch, build in
   dependency order, rpath, incremental stamps).
 
 ## Use

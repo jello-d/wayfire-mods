@@ -1,4 +1,4 @@
-// global-wall.cpp -- see global-wall.hpp. Derived from Wayfire's
+// global-wall.cpp: see global-wall.hpp. Derived from Wayfire's
 // plugins/common/workspace-wall.cpp @ 746bc7e (v0.10.1).
 
 #include "global-wall.hpp"
@@ -27,7 +27,7 @@ namespace atlas
 {
 namespace
 {
-// Bounding box of every output in layout coordinates -- the logical desktop.
+// Bounding box of every output in layout coordinates: the logical desktop.
 wf::geometry_t outputs_union()
 {
     bool first = true;
@@ -146,7 +146,7 @@ class wall_node_t : public wf::scene::node_t
             u.width, u.height};
     }
 
-    // The whole grid rectangle in wall coordinates -- what the union shows.
+    // The whole grid rectangle in wall coordinates: what the union shows.
     wf::geometry_t wall_rect() const
     {
         return {0, 0,
@@ -164,7 +164,7 @@ class wall_node_t : public wf::scene::node_t
             og.width, og.height};
     }
 
-    // Map a wall-coord box to its on-screen (layout-coord) rect -- the same
+    // Map a wall-coord box to its on-screen (layout-coord) rect: the same
     // wall->union scaling render() applies, so damage matches what is drawn.
     wf::geometry_t screen_rect(wf::geometry_t b) const
     {
@@ -181,7 +181,7 @@ class wall_node_t : public wf::scene::node_t
     // The grabbed view's rectangle in wall coordinates for an ARBITRARY cell:
     // that cell's output tile (the view keeps its own output), offset by the
     // view's bounding box (a current-workspace view's box is output-local, the
-    // current viewport at the origin -- and its position is the same in every
+    // current viewport at the origin, and its position is the same in every
     // workspace). nullopt when nothing is grabbed or the view is gone.
     std::optional<wf::geometry_t> view_rect_in_cell(wf::point_t cell) const
     {
@@ -416,7 +416,7 @@ class wall_render_instance_t : public wf::scene::render_instance_t
         // Translucent overlays must be repainted IN FULL on every frame the
         // wall renders. Partial per-frame damage (a cursor-only frame, say)
         // repaints only a slice of a blended rect, so across the swapchain some
-        // buffers hold a complete box and others a stale one -- it flickers,
+        // buffers hold a complete box and others a stale one: it flickers,
         // worst at the output seams, where the box is one rect split across
         // outputs that paint their slices on independent timing. Opaque tiles
         // are damage-idempotent and need none of this; a blend does. Force each
@@ -478,7 +478,7 @@ class wall_render_instance_t : public wf::scene::render_instance_t
 
         // Keyboard selection: a WHISPER of green over the whole selected cell.
         // The zoom animation already says which workspace is which, so this is
-        // ~10% alpha, not a slab -- enough to locate the cursor, not enough to
+        // ~10% alpha, not a slab: enough to locate the cursor, not enough to
         // shimmer over the live workspace under it. add_rect wants premult
         // colour, so green (0.2, 0.85, 0.35) at 0.1 alpha is those times 0.1.
         if (self->selection)
@@ -492,7 +492,7 @@ class wall_render_instance_t : public wf::scene::render_instance_t
         // Drag preview: a solid 40% blue over the grabbed window (premultiplied
         // blue (0.2, 0.4, 1.0) at 0.4), at its own position within whichever
         // workspace is the current target, tweened between cells. Drawn last so
-        // it reads on top. This is the WHOLE drag cue -- the target workspace
+        // it reads on top. This is the WHOLE drag cue: the target workspace
         // is NOT washed green; only home keeps its selection tint.
         if (auto pr = self->preview_rect())
         {

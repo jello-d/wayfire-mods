@@ -1,4 +1,4 @@
-// global-switcher.cpp -- see global-switcher.hpp. The spanning aux-buffer +
+// global-switcher.cpp: see global-switcher.hpp. The spanning aux-buffer +
 // add_texture render path is derived from atlas's own global-wall.cpp, which in
 // turn follows Wayfire's plugins/common/workspace-wall.cpp @ 746bc7e (v0.10.1).
 // The MRU-ring arrangement is derived from plugins/single_plugins/switcher.cpp
@@ -32,7 +32,7 @@ namespace atlas
 {
 namespace
 {
-// Bounding box of every output in layout coordinates -- the logical desktop.
+// Bounding box of every output in layout coordinates: the logical desktop.
 wf::geometry_t outputs_union()
 {
     bool first = true;
@@ -75,7 +75,7 @@ wf::geometry_t fit_centered(int vw, int vh, int cx, int cy, int mw, int mh)
 
 // One visible ring slot: a window rendered into its own buffer and textured
 // into `box` (global layout coordinates). `src` is the window's content bbox in
-// its own output-local space -- the buffer size and the render source.
+// its own output-local space: the buffer size and the render source.
 struct slot_t
 {
     wayfire_toplevel_view view;
@@ -135,7 +135,7 @@ class switcher_render_instance_t : public wf::scene::render_instance_t
     {
         // Refresh each slot's buffer from the live window. need_render is set
         // when the slot's window changes (arrange), so between cycles the
-        // buffers hold a static snapshot -- fine for a brief overview, and the
+        // buffers hold a static snapshot: fine for a brief overview, and the
         // buffers are shared, so only the first output's pass renders them.
         for (auto& sl : self->slots)
         {
@@ -244,7 +244,7 @@ class global_switcher_t::impl
 
         // Start on the previous window (classic alt+tab centres it right away).
         // NOTE: if the activating Tab press is also delivered to the grab, this
-        // could land one past -- an off-by-one to confirm on the box.
+        // could land one past: an off-by-one to confirm on the box.
         cursor = (views.size() > 1) ? 1 : 0;
 
         node = std::make_shared<switcher_node_t>(background,

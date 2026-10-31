@@ -8,7 +8,7 @@
 #      a no-op when every component matches the current refs/patches/plugins.
 #      Sudo-SAFE: if the prefix is not writable and no non-interactive sudo
 #      exists, it SKIPS rather than hang (the real build runs where sudo is
-#      authed -- a provision's install phase, or a cutover).
+#      authed: a provision's install phase, or a cutover).
 #   verify     build into a THROWAWAY prefix, no sudo; proves the whole stack
 #      still fetches, patches, and compiles against the pins without touching
 #      /opt (CI / the check to run before bumping a ref).
@@ -50,10 +50,17 @@ else _G=; _R=; _O=; fi
 ok()  { printf '  %s[OK]%s   %s\n' "$_G" "$_O" "$1"; }
 bad() { printf '  %s[FAIL]%s %s\n' "$_R" "$_O" "$1"; RC=1; }
 
-_build() {   # <prefix>  -- run the recipe against a prefix
-  # env (not a bare assignment prefix): an assignment word produced by expansion
-  # -- ${WBM_NOSTAMP:+...} -- is NOT recognised as one by the shell and would be
-  # run as a command; env parses its VAR=val args correctly.
+_safe_path() {   # <path> <verb>: refuse an empty, relative or shallow path
+  case $1 in
+  /*/*) ;;
+  *) echo "$PKG: $2: refusing to remove '$1'" >&2; return 1 ;;
+  esac
+}
+
+_build() {   # <prefix>: run the recipe against a prefix
+  # env (not a bare assignment prefix): an assignment word produced by
+  # expansion, such as ${WBM_NOSTAMP:+...}, is NOT recognised as one by the
+  # shell and would be run as a command; env parses VAR=val args correctly.
   env WBM_ROOT="$_root" WBM_CACHE="$CACHE" ${WBM_NOSTAMP:+WBM_NOSTAMP=1} \
     sh "$_root/libexec/build-wayfire" "$1"
 }
@@ -63,7 +70,7 @@ do_install() {
   # non-interactive sudo (e.g. a Link-phase staged run with no tty), skip rather
   # than hang on a password prompt. The real build runs where sudo is authed.
   if [ ! -w "$WF_PREFIX" ] && ! sudo -n true 2>/dev/null; then
-    echo "$PKG: $WF_PREFIX needs sudo and none is available -- skipping." >&2
+    echo "$PKG: $WF_PREFIX needs sudo and none is available; skipping." >&2
     echo "$PKG:   (runs in a provision's install phase, or a sudo cutover)" >&2
     return 0
   fi
@@ -72,7 +79,12 @@ do_install() {
 
 do_verify() {
   _tmp=$(mktemp -d)
-  trap 'rm -rf "$_tmp"' EXIT INT TERM
+  # CHECKED, THEN BAKED IN AS A LITERAL: `rm -rf` never runs on a variable
+  # expansion, and a single-quoted trap would defer it to fire time.
+  _safe_path "$_tmp" verify || exit 1
+  _v_c="'$_tmp'"
+  # shellcheck disable=SC2064  # expanding NOW is the point; see above
+  trap "rm -rf -- $_v_c" EXIT INT TERM
   echo "$PKG: verify build into $_tmp (throwaway, no sudo) ..."
   WBM_NOSTAMP=1 _build "$_tmp"
   [ -x "$_tmp/bin/wayfire" ] \
@@ -81,11 +93,16 @@ do_verify() {
 }
 
 do_uninstall() {
+  # Both targets come from overridable variables (WF_PREFIX, WBM_CACHE), so
+  # each is checked before anything is removed.
+  _safe_path "$WF_PREFIX" uninstall || exit 1
+  _safe_path "$CACHE" uninstall || exit 1
   if [ -d "$WF_PREFIX" ] && { [ -w "$WF_PREFIX" ] || sudo -n true 2>/dev/null; }
   then
-    { [ -w "$WF_PREFIX" ] && rm -rf "$WF_PREFIX"; } || sudo rm -rf "$WF_PREFIX"
+    { [ -w "$WF_PREFIX" ] && rm -rf -- "$WF_PREFIX"; } \
+      || sudo rm -rf -- "$WF_PREFIX"
   fi
-  rm -rf "$CACHE/stamps"
+  rm -rf -- "$CACHE/stamps"
   echo "$PKG: removed $WF_PREFIX + build stamps"
 }
 

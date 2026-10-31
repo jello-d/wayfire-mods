@@ -3,7 +3,7 @@
  *
  * waybar reserves an exclusive zone top and bottom, so the compositor's
  * workarea is inset from the full output. Tiled and maximized views already
- * respect that inset; FLOATING views do not -- the `place` plugin skips
+ * respect that inset; FLOATING views do not: the `place` plugin skips
  * self-positioning clients (xwayland/wine set startup-x/y), never clamps a
  * window taller than the workarea, and nothing stops a drag from parking a
  * window half under a bar. This plugin adds the missing floor.
@@ -24,7 +24,7 @@
  *   mostly onto the neighbour workspace (centre up in the top bar / down in the
  *   bottom bar). New windows that spawn under a bar snap out too.
  *
- *   Using the workarea CENTRE -- not full containment in the workspace -- is
+ *   Using the workarea CENTRE, not full containment in the workspace, is
  *   deliberate: a window tucked under a bar often pokes a few px past the SAME
  *   screen edge (its bottom runs just off-screen), and a full-containment test
  *   wrongly reads that as "off the edge, hands off". The centre test keys on
@@ -34,7 +34,7 @@
  *
  *   SOLID FRAME, not the shadow, not the content. A decorator draws a drop
  *   shadow around the window and (pixdecor) records its thickness as a per-view
- *   margin, expanding the view geometry to include it -- so get_geometry() is
+ *   margin, expanding the view geometry to include it, so get_geometry() is
  *   the shadow's outer edge, a shadow-width off the real window, and clamping
  *   that leaves an unusable gap. We strip JUST the shadow margin (read live off
  *   the view, see wf_shadow_margin_t) to get the SOLID decorator edge (titlebar
@@ -47,13 +47,13 @@
  *
  * CONFIG-LESS BY DESIGN. There is nothing to tune: the boundary is the live
  * workarea (output->workarea->get_workarea()), read fresh every time, so the
- * DMZ auto-tracks whatever the bars actually reserve -- change the waybar
+ * DMZ auto-tracks whatever the bars actually reserve: change the waybar
  * height, add or drop a bar, and this follows with no edit. Hardcoding or
  * configuring a bar height would be a second copy of a fact the compositor
  * already owns, and it would drift. To disable, unload the plugin.
  *
  * WHY IT DOES NOT FIGHT INTERACTION. `move` renders a drag through a
- * transformer and commits the real geometry once, at drop -- so
+ * transformer and commits the real geometry once, at drop, so
  * view-geometry-changed fires a single time per drag, at release, and clamping
  * there is friction (snap out on release), never a rubber-band mid-drag.
  * `resize` instead commits geometry continuously, so we skip size-changing
@@ -61,7 +61,7 @@
  * corrected on its next move, and fresh spawns are caught at map. edge-flipping
  * is untouched: it triggers on the POINTER hitting a screen edge, never on
  * window geometry, so dragging a window to an edge still flips workspaces and
- * carries the window along -- this only acts on what is LEFT under a bar.
+ * carries the window along: this only acts on what is LEFT under a bar.
  */
 
 #include <wayfire/plugin.hpp>
@@ -80,13 +80,13 @@
 // its drop-shadow thickness as this custom_data_t on the VIEW, under the name
 // below, and expands the view geometry to include the shadow. We read it to
 // strip ONLY the shadow off the frame (see clamp()). The type must match
-// pixdecor's byte-for-byte -- same name at global scope, same wf::custom_data_t
-// base, same single decoration_margins_t member -- because Wayfire dlopens
+// pixdecor's byte-for-byte: same name at global scope, same wf::custom_data_t
+// base, same single decoration_margins_t member, because Wayfire dlopens
 // plugins RTLD_GLOBAL (plugin-loader.cpp: "RTLD_GLOBAL is required for RTTI/
 // dynamic_cast across plugins"), so the typeinfo unifies across the two .so and
 // get_data<>()'s dynamic_cast finds pixdecor's stored object, then reads
 // margins at the matching offset. If pixdecor renames/moves the type or the key
-// the read degrades to null (the shadow gap returns), never a crash -- re-sync
+// the read degrades to null (the shadow gap returns), never a crash: re-sync
 // this vendoring then.
 static const char *const SHADOW_MARGIN_DATA = "wf-decoration-shadow-margin";
 
@@ -133,7 +133,7 @@ class wayfire_workarea_guard : public wf::plugin_interface_t
         }
 
         // Only pure moves. A size change means an in-progress resize (or a
-        // tile/untile), which commits geometry live -- clamping it would fight
+        // tile/untile), which commits geometry live: clamping it would fight
         // the gesture. See the header note on interaction.
         auto g = view->get_geometry();
         if ((g.width != ev->old_geometry.width) ||
@@ -148,7 +148,7 @@ class wayfire_workarea_guard : public wf::plugin_interface_t
     // A view we should manage: a real, mapped, free-floating toplevel. Skip
     // children/dialogs (they track their parent), tiled views (the tiler owns
     // their geometry and already honours the workarea), fullscreen, and sticky
-    // views (shown on every workspace -- a deliberate, placed thing).
+    // views (shown on every workspace: a deliberate, placed thing).
     bool manages(wayfire_toplevel_view view)
     {
         return view && view->is_mapped() && view->get_output() &&
@@ -190,7 +190,7 @@ class wayfire_workarea_guard : public wf::plugin_interface_t
         // window is predominantly in the visible area, so a bar overlap is
         // accidental. A centre outside WA is a deliberate placement (shoved
         // half off the side to make room, or pushed mostly onto the neighbour
-        // workspace) -- hands off. Centre, not full containment, so a tuck that
+        // workspace): hands off. Centre, not full containment, so a tuck that
         // pokes a few px past the same screen edge still counts.
         int cx = s.x + s.width / 2;
         int cy = s.y + s.height / 2;
@@ -211,14 +211,14 @@ class wayfire_workarea_guard : public wf::plugin_interface_t
         {
             // Solid top under the top bar: push down flush beneath it
             // (titlebar visible, shadow hidden under the bar). Works for a
-            // too-tall window too -- top clears, bottom overflow accepted.
+            // too-tall window too: top clears, bottom overflow accepted.
             dy = wa.y - s.y;
         }
         else if ((s.height <= wa.height) &&
                  (s.y + s.height > wa.y + wa.height))
         {
             // Solid bottom under the bottom bar: push up flush. A too-tall
-            // window is intentionally NOT pushed here -- nothing gains it.
+            // window is intentionally NOT pushed here: nothing gains it.
             dy = (wa.y + wa.height) - (s.y + s.height);
         }
 

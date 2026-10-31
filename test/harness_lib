@@ -1,0 +1,23 @@
+# test/harness_lib - harness for wayfire-mods's shell tests (test/*.t), sourced
+# by each. `harness_init <name>` sets HERE (repo root), a scratch dir T (removed
+# on exit), and pass/fail/skip. The `_lib` marker means SOURCED, never
+# executed. POSIX sh; one with `sh test/<name>.t`, all with test/run.
+harness_init() {   # <name>
+  TEST_NAME=$1
+  HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+  T=$(mktemp -d)
+  # CHECKED, THEN BAKED IN AS A LITERAL: `rm -rf` never runs on a variable
+  # expansion. A single-quoted trap defers the expansion to fire time, so an
+  # empty or reassigned T would remove whatever it held by then.
+  case $T in
+  /*/*) ;;
+  *) printf 'harness_init: refusing to arm cleanup for T=[%s]\n' "$T" >&2
+     exit 1 ;;
+  esac
+  _hi_c="'$T'"
+  # shellcheck disable=SC2064  # expanding NOW is the point; see above
+  trap "rm -rf -- $_hi_c" EXIT INT TERM
+}
+pass() { printf 'ok   %s%s\n' "$TEST_NAME" "${1:+ ($1)}"; }
+fail() { printf 'FAIL %s: %s\n' "$TEST_NAME" "$1" >&2; exit 1; }
+skip() { printf 'skip %s (%s)\n' "$TEST_NAME" "$1"; exit 0; }

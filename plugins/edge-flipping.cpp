@@ -4,11 +4,11 @@
 // one instance per output, each watching pointer motion on its own output.
 //
 // Multi-output behavior is derived, never configured. An edge only flips if it
-// is EXTERIOR -- on the outer boundary of the whole output layout. An edge that
+// is EXTERIOR: on the outer boundary of the whole output layout. An edge that
 // abuts a neighbouring output is INTERIOR: flipping there is suppressed so the
 // pointer simply crosses to the next monitor. For a horizontal row of three
 // portrait panels this yields left+top+bottom on the leftmost, right+top+bottom
-// on the rightmost, and top+bottom only on the middle -- with no output names
+// on the rightmost, and top+bottom only on the middle, with no output names
 // anywhere; it falls out of the geometry and adapts to any arrangement.
 //
 // Flips affect only THIS output. Crossing an exterior edge flips the firing
@@ -16,7 +16,7 @@
 // panels in lockstep) is owned by the separate wsync plugin, which mirrors any
 // output's workspace change onto the rest. Edge-flipping deliberately does NOT
 // coordinate itself: when it did, its per-output broadcast and wsync both
-// applied the delta and the two compounded -- on a 3-wide wrapping grid three
+// applied the delta and the two compounded: on a 3-wide wrapping grid three
 // stacked -1 flips summed to a net zero (you saw the flip and landed back at
 // the start). One coordinator only; that one is wsync.
 
@@ -90,7 +90,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     // rotation, geometry edit). No output names: purely geometric.
     wf::get_core().output_layout->connect(&on_layout_changed);
 
-    // Always log init -- confirms binary version and effective config.
+    // Always log init: confirms binary version and effective config.
     LOGI("EDGEFLIP init: BUILD=", __DATE__, " ", __TIME__,
          " output=",             output->handle->name,
          " edge_px=",            (int)edge_px,
@@ -128,7 +128,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
   struct approach_state_t {
     // in_zone: was the cursor in this approach zone on the previous event?
     // Snapshotted before update_approach_state runs so the entry event can
-    // never fire -- entry_time is just being set and no traversal time has
+    // never fire: entry_time is just being set and no traversal time has
     // been measured yet.
     bool in_zone = false;
     bool disarmed = false;
@@ -154,7 +154,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
   bool ext_top = true;
   bool ext_bottom = true;
 
-  // Effective approach zone px -- approach_zone_px capped at 1/3 of the smaller
+  // Effective approach zone px: approach_zone_px capped at 1/3 of the smaller
   // output dimension to prevent overlapping opposite edges.
   int effective_ap = 0;
 
@@ -163,7 +163,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
   // approach window for accurate velocity measurement.
   int effective_check_interval = 0;
 
-  // Cached modifier bitmask -- recomputed only on config change.
+  // Cached modifier bitmask: recomputed only on config change.
   uint32_t cached_mods = 0;
 
   // Throttle.
@@ -173,7 +173,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
   // output layout. An edge is INTERIOR if some other output is adjacent on that
   // side (its opposite edge lies on our edge line and the perpendicular spans
   // overlap). Otherwise the edge is EXTERIOR and eligible to flip. Pure
-  // geometry -- no output names, works for any arrangement.
+  // geometry: no output names, works for any arrangement.
   void compute_exterior_edges() {
     const auto me = output->get_layout_geometry();
 
@@ -340,7 +340,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
       return;
     }
 
-    // Already in zone from a previous event -- check disarm timer.
+    // Already in zone from a previous event: check disarm timer.
     if (!state.disarmed && max_ms > 0) {
       using ms = std::chrono::milliseconds;
       const long elapsed =
@@ -378,7 +378,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     // MUST be layout geometry (global coords), not relative ({0,0,w,h}).
     // get_cursor_position() returns GLOBAL layout coordinates. Relative
     // geometry pins every output's box at origin (0,0), so the global cursor
-    // is tested against the wrong box -- correct only for the output sitting at
+    // is tested against the wrong box: correct only for the output sitting at
     // layout origin. That leaves far (non-origin) exterior edges unreachable
     // and lets every instance claim a cursor that is really on one output
     // (triple-firing on shared edges). Layout geometry puts cursor and bounds
@@ -402,7 +402,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     const bool approach_enabled = (ap > ep);
 
     // Per-edge approach zone detection. Interior edges are forced off here:
-    // their approach never arms, so they never flip -- the pointer just crosses
+    // their approach never arms, so they never flip: the pointer just crosses
     // to the neighbouring output.
     const bool in_left_approach =
         ext_left && approach_enabled && (lx <= ap);
@@ -431,7 +431,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     // Snapshot in_zone BEFORE updating approach state. This is critical:
     // update_approach_state sets in_zone=true on the entry event, so reading
     // in_zone after the update would make the entry-event protection
-    // completely ineffective -- the cursor could jump from outside the approach
+    // completely ineffective: the cursor could jump from outside the approach
     // zone to the edge in a single event and fire instantly. Using the
     // pre-update snapshot ensures at least one full check interval of traversal
     // time is measured before firing.
@@ -440,7 +440,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     const bool top_was_in_zone = top_approach.in_zone;
     const bool bottom_was_in_zone = bottom_approach.in_zone;
 
-    // Update all approach states unconditionally -- entry_time and disarm state
+    // Update all approach states unconditionally: entry_time and disarm state
     // must stay accurate whether or not we're at the edge.
     update_approach_state(left_approach, in_left_approach, now, max_ap_ms,
                           "left");
@@ -455,7 +455,7 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
     // Each edge is gated by its own approach state so a disarm on one side
     // never blocks the opposite side. was_in_zone uses the pre-update snapshot
     // to ensure the cursor was already in the approach zone on the previous
-    // event -- preventing firing on the entry event before any traversal time
+    // event, preventing firing on the entry event before any traversal time
     // has been measured.
     const bool left_allowed =
         !approach_enabled || (left_was_in_zone && !left_approach.disarmed);
@@ -517,12 +517,12 @@ class edge_flipping_t : public wf::per_output_plugin_instance_t {
            ",", ly, ")");
 
     // Flip THIS output only. wsync mirrors the resulting workspace change onto
-    // the other outputs, so the array still moves in lockstep -- but the delta
+    // the other outputs, so the array still moves in lockstep, but the delta
     // is applied exactly once, here, instead of once per output.
     apply_flip(target_dx, target_dy);
 
     // Disarm all edges on THIS instance after firing. The cursor is still
-    // physically inside our approach zone -- without this the next motion event
+    // physically inside our approach zone: without this the next motion event
     // would fire again. Disarming forces a full withdraw-and-re-approach. Only
     // leaving the approach zone (triggering reset()) re-arms them.
     left_approach.disarmed = true;

@@ -1,4 +1,4 @@
-// global-ring.cpp -- see global-ring.hpp. The spanning aux-buffer + add_texture
+// global-ring.cpp: see global-ring.hpp. The spanning aux-buffer + add_texture
 // overlay is the same path as global-switcher.cpp (and global-wall.cpp before
 // it): a scene-root node that clears to a backdrop and textures each window's
 // live content into its slot, so every output clips the union to its own
@@ -49,7 +49,7 @@ namespace atlas
 {
 namespace
 {
-// Bounding box of every output in layout coordinates -- the logical desktop.
+// Bounding box of every output in layout coordinates: the logical desktop.
 wf::geometry_t outputs_union()
 {
     bool first = true;
@@ -103,7 +103,7 @@ std::vector<wf::geometry_t> grid_cells(size_t n, wf::geometry_t area, int gap)
 }
 
 // Assign each view to a distinct grid cell so the TOTAL travel from every
-// window's real on-screen position to its cell is minimised -- the linear
+// window's real on-screen position to its cell is minimised: the linear
 // assignment problem, solved exactly by the Hungarian (Kuhn-Munkres) method.
 // Without it, cells are handed out in enumeration order and a window can sweep
 // clear across the desktop to a far cell; with it, each window drifts the short
@@ -283,7 +283,7 @@ std::string manifest_lookup(const std::string& path, wf::point_t cell)
 }
 
 // Cover-fit an img_w x img_h image over `span` (FILL: scale to cover, centred,
-// may overflow) -- identical to the workspace-wallpaper plugin's FILL mode, so
+// may overflow): identical to the workspace-wallpaper plugin's FILL mode, so
 // the ring backdrop matches the live desktop wallpaper exactly.
 wf::geometry_t fit_cover(int iw, int ih, wf::geometry_t span)
 {
@@ -301,7 +301,7 @@ wf::geometry_t fit_cover(int iw, int ih, wf::geometry_t span)
 
 // The current workspace's wallpaper, loaded into a GL texture and cover-fitted
 // over `span` (the output union, global coords). Drawn directly by the ring's
-// render() with OpenGL::render_texture -- NOT captured from the plugin's
+// render() with OpenGL::render_texture: NOT captured from the plugin's
 // BACKGROUND node into an aux buffer, which only rendered correctly for the
 // origin-0 output. std::nullopt if there is no wallpaper for the current cell.
 struct wallpaper_t
@@ -375,7 +375,7 @@ std::optional<wallpaper_t> load_current_wallpaper(wf::geometry_t span)
 
 // One grid slot: a window rendered into its own buffer and textured into `box`
 // (global layout coordinates). `src` is the window's content bbox in its own
-// output-local space -- the buffer size and the render source.
+// output-local space: the buffer size and the render source.
 struct slot_t
 {
     wayfire_toplevel_view view;
@@ -457,7 +457,7 @@ class ring_render_instance_t : public wf::scene::render_instance_t
         std::vector<wf::scene::render_instruction_t>& instructions,
         const wf::render_target_t& target, wf::regionf_t& damage) override
     {
-        // Refresh each slot's buffer from the live window (once per slot -- the
+        // Refresh each slot's buffer from the live window (once per slot: the
         // buffers are shared across the per-output instances, so only the first
         // output's pass renders them).
         for (auto& sl : self->slots)
@@ -500,7 +500,7 @@ class ring_render_instance_t : public wf::scene::render_instance_t
         data.pass->clear(data.damage, self->background);
 
         // The current workspace's wallpaper, cover-fitted over the union and
-        // drawn per output -- data.damage scissors each output to its own
+        // drawn per output: data.damage scissors each output to its own
         // slice, the same global-coordinate model the thumbnails use, so it
         // lands correctly on every output (unlike the old aux-capture path,
         // which only rendered the origin-0 output). Drawn straight to the ring
@@ -513,7 +513,7 @@ class ring_render_instance_t : public wf::scene::render_instance_t
             {
                 wf::gles::bind_render_buffer(data.target);
                 // 0.11: damage boxes are pixman_box64f_t (float) and
-                // render_target_logic_scissor takes one directly -- no
+                // render_target_logic_scissor takes one directly: no
                 // wlr_box_from_pixman_box int conversion any more.
                 for (const auto& box : data.damage)
                 {

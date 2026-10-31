@@ -3,7 +3,7 @@
 # patches/ must be referenced by the recipe (a renamed/typo'd/orphaned patch is
 # caught before a real build fails cryptically). The plugins tree must be a
 # buildable meson project.
-. "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/harness_lib"
 harness_init recipe
 _r=$HERE/libexec/build-wayfire
 [ -f "$_r" ] || fail "no libexec/build-wayfire"

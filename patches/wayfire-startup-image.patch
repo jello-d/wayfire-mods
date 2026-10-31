@@ -34,7 +34,7 @@ index a1edd55b..930a0fad 100644
 +// so startup shows it instead of the black empty-buffer wlroots attaches at
 +// modeset (types/output/render.c) while the ~40-plugin load runs synchronously
 +// before the event loop's first composite. Called once, after the outputs are
-+// mode-set (wlr_backend_start) and before core.post_init() loads plugins -- so
++// mode-set (wlr_backend_start) and before core.post_init() loads plugins, so
 +// it costs one texture upload + one commit per output (microseconds) and is
 +// transparently overdrawn by the wallpaper on the first real frame.
 +//
@@ -85,7 +85,7 @@ index a1edd55b..930a0fad 100644
 +    // Read the PPM header, tolerating '#' comment lines (ImageMagick, GIMP and
 +    // others emit them): magic "P6", then width, height, maxval. next_uint
 +    // skips whitespace and comments and consumes the single delimiter after the
-+    // number it reads -- so after maxval the stream sits at the first pixel.
++    // number it reads, so after maxval the stream sits at the first pixel.
 +    auto next_uint = [&in]() -> long
 +    {
 +        int c = in.get();
@@ -206,7 +206,7 @@ index a1edd55b..930a0fad 100644
      }
  
      setenv("WAYLAND_DISPLAY", core.wayland_display.c_str(), 1);
-+    // Paint the startup image NOW -- outputs are mode-set but plugins have not
++    // Paint the startup image NOW: outputs are mode-set but plugins have not
 +    // loaded yet, so this replaces the black modeset buffer for the whole
 +    // plugin-load window (see paint_startup_image above).
 +    paint_startup_image();

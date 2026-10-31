@@ -1,25 +1,25 @@
 // atlas.cpp
 //
-// atlas -- present N physical outputs as one logical desktop for overview and
+// atlas: present N physical outputs as one logical desktop for overview and
 // window switching. See this directory's parent CLAUDE.md for the full design.
 //
 // STATUS: activation shell. It declares CAPABILITY_MANAGE_COMPOSITOR (core then
 // gives mutual exclusion with expo/scale for free), binds wall/ring/ring_all,
 // activates across every output with clean rollback, grabs input on each output
-// (Escape exits -- this is the escape hatch that makes the limit_region lift
+// (Escape exits: this is the escape hatch that makes the limit_region lift
 // safe), lifts limit_region behind an RAII guard, and tears all of that down on
 // deactivate, on cancel (desktop lock), and on unload.
 //
 // RING renders now: the current workspace's windows across every output are
 // collected via global-wset.hpp and laid out as a grid of scaled thumbnails
 // that spans all monitors (the lifted limit_region is what lets one grid cross
-// output boundaries). Input is grabbed -- press Escape to exit; selection and
+// output boundaries). Input is grabbed: press Escape to exit; selection and
 // drag are not wired yet, so it is a modal, look-only overview. WALL (the
 // workspace-grid renderer, needs a global workspace-wall) and RING_ALL (all
 // workspaces, needs off-workspace views enabled) still only lift-and-grab, and
 // there is no open/close animation yet. Teardown stays the design's
 // highest-risk item: a lifted limit_region that never restores, with no way
-// out, wedges the session (it did once, before the grab existed -- hence
+// out, wedges the session (it did once, before the grab existed: hence
 // Escape lands with the lift), so transformers are torn down by re-querying
 // LIVE views, never a stored observer_ptr a mid-overview unmap would dangle.
 //
@@ -72,7 +72,7 @@ enum class atlas_mode_t
 // teardown, to find and remove exactly atlas's transform and no other.
 constexpr const char *ATLAS_TRANSFORMER = "atlas";
 
-// Bounding box of every output in global layout coordinates -- the logical
+// Bounding box of every output in global layout coordinates: the logical
 // screen atlas lays its cells out within.
 inline wf::geometry_t outputs_union()
 {
@@ -400,7 +400,7 @@ class atlas_t : public wf::plugin_interface_t,
 
     // The graceful exit. The ring and wall overviews run their close animation
     // (thumbnails slide home / the grid zooms back into the current workspace)
-    // and tear down only when it finishes -- deferred to an idle because the
+    // and tear down only when it finishes: deferred to an idle because the
     // overlay signals completion from inside its own render hook, where
     // destroying it would be unsafe (rem_effect on the running hook). switch,
     // and a second exit request while a close is already running, tear down
@@ -491,7 +491,7 @@ class atlas_t : public wf::plugin_interface_t,
         if ((mode == atlas_mode_t::ring) || (mode == atlas_mode_t::ring_all))
         {
             // ring/ring_all hand-paint their thumbnails onto a backdrop at the
-            // scene root, so -- like wall and switch -- they need NO
+            // scene root, so, like wall and switch, they need NO
             // limit_region lift and occlude the live desktop cleanly. ring is
             // the current workspace only; ring_all is every workspace.
             ring = std::make_unique<atlas::global_ring_t>(
@@ -507,7 +507,7 @@ class atlas_t : public wf::plugin_interface_t,
         else if (mode == atlas_mode_t::wall)
         {
             // wall renders at the scene root, so it spans outputs without any
-            // lift -- just insert the node.
+            // lift: just insert the node.
             wall = std::make_unique<atlas::global_wall_t>((int)gap_size,
                 (wf::color_t)background, (int)anim_duration);
             wall->start();
@@ -536,7 +536,7 @@ class atlas_t : public wf::plugin_interface_t,
 
         active = true;
         LOGI("ATLAS: activated mode=", (int)mode, " across ", held.size(),
-            " output(s) -- Escape to exit");
+            " output(s); Escape to exit");
 
         // TODO(render): the open/close animation is still the missing polish.
         return true;
@@ -686,7 +686,7 @@ class atlas_t : public wf::plugin_interface_t,
     // re-queries the current views rather than trusting a stored list: a view
     // that unmapped mid-overview is simply absent (its transformer died with
     // it), so nothing dangles and nothing leaks.
-    // Set EVERY output's wset to the same workspace -- atlas's global-desktop
+    // Set EVERY output's wset to the same workspace: atlas's global-desktop
     // switch (all outputs move together, the definition atlas owns). This is
     // the deliberate counter to per-output wset drift, not a victim of it.
     void switch_workspace_all(wf::point_t ws)
@@ -727,7 +727,7 @@ class atlas_t : public wf::plugin_interface_t,
     }
 
     // Finish a drag: move the grabbed view to the workspace the preview aims
-    // at (grab_target) on its OWN output -- a view keeps its output, only its
+    // at (grab_target) on its OWN output: a view keeps its output, only its
     // workspace changes. A no-op when the aim is back on the home workspace, or
     // the view vanished mid-drag; either way the overview stays open.
     void drop_drag()

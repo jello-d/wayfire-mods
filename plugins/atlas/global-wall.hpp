@@ -75,7 +75,7 @@ class global_wall_t
     // cell), or nullopt to clear.
     void set_selection(std::optional<wf::point_t> cell);
 
-    // Tint the grabbed view blue -- "this is the window a drag will move" -- or
+    // Tint the grabbed view blue, "this is the window a drag will move", or
     // nullptr to clear. The blue preview shows the window at its OWN position
     // within whichever workspace is the current target (set_grab_target), and
     // tweens between cells as the target changes. Distinct from the green cell

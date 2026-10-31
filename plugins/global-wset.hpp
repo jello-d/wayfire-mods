@@ -14,7 +14,7 @@
 // All geometry returned is in GLOBAL layout coordinates. Wayfire stores view
 // geometry output-local (each output's origin is 0,0 in its own space;
 // scene.hpp:415-417), so we translate by the owning output's layout offset
-// (get_layout_geometry(), output.hpp:101) -- the same reconciliation scale.cpp
+// (get_layout_geometry(), output.hpp:101): the same reconciliation scale.cpp
 // does at 543-550. Verified against Wayfire v0.10.1 (746bc7e).
 
 #pragma once
@@ -79,7 +79,7 @@ inline std::vector<placed_view_t> current_ws_views()
         // OVERLAP, so a maximized window nudged one workspace over pokes a
         // few-pixel sliver over the edge and leaks in as a foreign thumbnail),
         // and NOT get_view_main_workspace (correct, but waybar cannot call it
-        // over IPC -- matching waybar's own mechanism keeps them in lockstep
+        // over IPC: matching waybar's own mechanism keeps them in lockstep
         // wherever the line moves: change it in taskbar.cpp and here together).
         const auto vp = wo->get_relative_geometry(); // {0, 0, w, h}
         for (auto &v : wset->get_views(wf::WSET_MAPPED_ONLY |
@@ -102,7 +102,7 @@ inline std::vector<placed_view_t> current_ws_views()
 }
 
 // Every mapped, non-minimized toplevel on EVERY workspace of every output, in
-// global layout coordinates -- the all-workspaces logical desktop, for
+// global layout coordinates: the all-workspaces logical desktop, for
 // ring_all. An off-current-workspace view's geometry is its off-viewport
 // position; that is fine, the ring layout only needs each view's size and then
 // assigns it a cell.
@@ -141,11 +141,11 @@ inline std::optional<placed_view_t> focused_view()
 
 // Move keyboard focus to a view: switch the active OUTPUT if the view is on a
 // different one, but never the WORKSPACE. focus_request() would switch the
-// workspace too -- it calls focus_raise_view(view, allow_switch_ws=true), whose
+// workspace too: it calls focus_raise_view(view, allow_switch_ws=true), whose
 // ensure_visible() scrolls to the workspace holding the view's CENTRE
 // (window-manager.cpp:158, workspace-set.hpp:153). A WSET_CURRENT_WORKSPACE
 // candidate can straddle the edge with its centre on the neighbour, so
-// focus_request() teleports one workspace over -- the "occasional jump to
+// focus_request() teleports one workspace over: the "occasional jump to
 // another workspace" in directional-focus. Call focus_raise_view directly with
 // allow_switch_ws=false: focus_output() runs unconditionally so cross-monitor
 // focus still works, but the ensure_visible() scroll is skipped. Pass true only

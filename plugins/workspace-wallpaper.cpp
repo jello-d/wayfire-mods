@@ -11,7 +11,7 @@
 // Every output draws that identical rectangle, shifted into its own local
 // frame by -origin, and the scissor clips it to that output. Because the
 // rectangle is computed from the union (not per-output), the slices tile
-// exactly -- a feature crossing a bezel is continuous. Per-output centering is
+// exactly: a feature crossing a bezel is continuous. Per-output centering is
 // never used for the wallpaper, which is what previously broke the seams.
 
 #include <wayfire/plugin.hpp>
@@ -279,7 +279,7 @@ void wallpaper_render_instance_t::render(
       //    this output's local render frame: subtract the output's global
       //    origin to land at the output's top-left, then add the node's own
       //    position so the image slides with the workspace. The scissor clips
-      //    to the damaged box, so each output shows only its slice -- and
+      //    to the damaged box, so each output shows only its slice, and
       //    because every output draws the same global rect, the slices tile
       //    seamlessly.
       if (owner->wall_tex && owner->wall_tex->valid) {

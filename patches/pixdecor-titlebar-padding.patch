@@ -7,7 +7,7 @@ index f566196..a8f455c 100644
      height *= 3;
      height /= 2;
 -    height += 8;
-+    // tackup: no flat padding -- keep the font-relative 1.5x sizing, drop
++    // wayfire-mods: no flat padding; keep the font-relative 1.5x sizing, drop
 +    // the fixed 8px overhead (proportionally huge on small fonts).
      if (height < MIN_BAR_HEIGHT)
      {

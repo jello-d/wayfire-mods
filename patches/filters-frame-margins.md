@@ -1,13 +1,13 @@
 # filters-frame-margins.patch
 
-A patch to soreau/filters (pinned at `FILTERS_REF`, currently
-`33f477847085e05a1682e0747a728aa1e817308e`) that publishes the server-side
-decoration extent to filter shaders as a new `frame_margins` uniform.
+A patch to soreau/filters (pinned at `FILTERS_REF` in `refs`) that publishes
+the server-side decoration extent to filter shaders as a new `frame_margins`
+uniform.
 
-Applied by `modules/compositor` (the filters step inlines gate+fetch+patch+build+
-mark; the build pin folds in this patch's content, so editing it forces a
-filters rebuild). filters is a plugin `.so`, so picking up a rebuild needs a
-compositor restart (`RTLD_GLOBAL`, same as any Wayfire plugin).
+Applied by `libexec/build-wayfire` (the filters step: the build pin folds in
+this patch's content, so editing it forces a filters rebuild). filters is a
+plugin `.so`, so picking up a rebuild needs a compositor restart (`RTLD_GLOBAL`,
+same as any Wayfire plugin).
 
 ## What it changes
 
@@ -48,7 +48,7 @@ Wayfire's built-in `decoration` plugin: that decorator draws the frame as a
 subsurface and expands the toplevel geometry to match, so `surface_root` and
 `get_geometry()` coincide and the subtraction is zero (then padded to 2px). So
 `margins` cannot tell a content shader where the frame is on a built-in-
-decorated window -- and the `invert` shader ended up inverting the titlebar,
+decorated window, and the `invert` shader ended up inverting the titlebar,
 destroying the focus cue (active vs inactive titlebar colour).
 
 The real frame extent is not derivable from the rendered texture; it lives on
@@ -68,10 +68,10 @@ case with zero change to the silhouette shaders.
 
 ## What consumes it here
 
-`deploy/filters/shaders/invert` reads both uniforms and insets its inversion by
-`margins + frame_margins`, so it covers the client content only. No other
-shader in `deploy/filters/shaders/` declares `frame_margins`, so all are
-unchanged.
+The consumer's (tackup's) `deploy/filters/shaders/invert` reads both uniforms
+and insets its inversion by `margins + frame_margins`, so it covers the client
+content only. No other shader in `deploy/filters/shaders/` declares
+`frame_margins`, so all are unchanged.
 
 ## Upstream case
 

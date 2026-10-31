@@ -25,8 +25,8 @@ index 14f6e617..314d9c1f 100644
  
 -    wf::dassert(!v->parent, "Cannot move a dialog to a different output than its parent!");
 +    // A child/dialog view must stay on its parent's output. Refuse the move
-+    // rather than abort the whole compositor on a bad request (tackup hardening
-+    // patch: build/patches/wayfire-ipc-guard-dialog-output.patch).
++    // rather than abort the whole compositor on a bad request (wayfire-mods hardening
++    // patch: patches/wayfire-ipc-guard-dialog-output.patch).
 +    if (v->parent)
 +    {
 +        LOGE("move_view_to_output: refusing to move a dialog off its parent's output");

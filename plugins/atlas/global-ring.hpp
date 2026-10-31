@@ -6,7 +6,7 @@
 //
 // Like the switcher, it HAND-PAINTS: each window is rendered into an aux buffer
 // and textured onto an opaque backdrop by an overlay node at the scene root.
-// So it needs NO limit_region lift -- it occludes the live desktop cleanly
+// So it needs NO limit_region lift: it occludes the live desktop cleanly
 // (backdrop first, then only the arranged thumbnails), spans outputs because
 // the node lives at the root, and carries no teardown-critical restore.
 //
