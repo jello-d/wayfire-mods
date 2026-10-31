@@ -11,7 +11,8 @@
 #      authed: a provision's install phase, or a cutover).
 #   verify     build into a THROWAWAY prefix, no sudo; proves the whole stack
 #      still fetches, patches, and compiles against the pins without touching
-#      /opt (CI / the check to run before bumping a ref).
+#      /opt, then runs test/live.t on it headless so each patch is proven to
+#      BEHAVE (CI / the check to run before bumping a ref).
 #   check      wayfire installed, self-contained by rpath, key components
 #      present; [OK]/[FAIL] markers.
 #   uninstall  remove the prefix + the build stamps.
@@ -89,7 +90,19 @@ do_verify() {
   WBM_NOSTAMP=1 _build "$_tmp"
   [ -x "$_tmp/bin/wayfire" ] \
     || { echo "$PKG: verify FAILED (no wayfire produced)" >&2; exit 1; }
-  echo "$PKG: verify OK (whole stack builds against the pins)"
+  # Then RUN it: test/live.t drives the throwaway prefix headless and proves
+  # each patch still behaves, which applying cleanly does not. It skips
+  # (exit 0, says why) where foot, grim or GTK3 python is missing, so the
+  # verdict names which of the two was proven.
+  _live=$(WFM_LIVE_PREFIX=$_tmp sh "$_root/test/live.t" 2>&1) || {
+    printf '%s\n' "$_live" >&2
+    echo "$PKG: verify FAILED (the stack builds, a patch misbehaves)" >&2
+    exit 1; }
+  printf '%s\n' "$_live"
+  case $_live in
+    *skip\ live*) echo "$PKG: verify OK (builds; live checks SKIPPED)" ;;
+    *) echo "$PKG: verify OK (builds, and every patch behaves live)" ;;
+  esac
 }
 
 do_uninstall() {

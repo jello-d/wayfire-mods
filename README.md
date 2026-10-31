@@ -29,7 +29,7 @@ rather than by rebasing a divergent tree.
 
 ```sh
 sudo ./setup.sh install   # build + install into /opt/wayfire (incremental)
-./setup.sh verify         # build into a throwaway prefix, no sudo; prove it
+./setup.sh verify         # throwaway build, no sudo, then run it headless
 ./setup.sh check          # installed + self-contained + components? [OK]/[FAIL]
 ./setup.sh uninstall      # remove the prefix + stamps
 ./setup.sh version        # package version + wlroots/Wayfire pins
@@ -39,7 +39,7 @@ sudo ./setup.sh install   # build + install into /opt/wayfire (incremental)
 rather than hang if it cannot get the prefix). Every installed ELF carries a
 relative `<prefix>/lib/<arch>` rpath, so the prefix is self-contained with no
 ld.so.conf entry. To ride new upstream: edit `refs`, `./setup.sh verify`, and
-commit the bump if it builds.
+commit the bump if it passes.
 
 `patches/` and `plugins/` are Wayfire/wlroots C++; follow upstream style there.
 

@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""live-dialog: a GTK3 parent window plus a modal dialog, for live.t.
+
+The dialog is an xdg_toplevel with set_parent, so wayfire gives its view a
+`parent`, which is what the ipc-guard patch protects. Titles are fixed
+("wfm-parent", "wfm-dialog") so the test finds them over IPC. Runs until
+killed.
+
+The dialog is created only AFTER the parent has mapped: creating both at
+once yielded two unrelated toplevels (measured: the dialog's parent was
+-1), so GTK3 evidently sends set_parent only for an already-mapped parent.
+"""
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk  # noqa: E402
+
+
+def main():
+    parent = Gtk.Window(title="wfm-parent")
+    parent.set_default_size(300, 200)
+    parent.show_all()
+
+    def show_dialog():
+        dialog = Gtk.Dialog(title="wfm-dialog", transient_for=parent,
+                            modal=True)
+        dialog.set_default_size(150, 100)
+        dialog.show_all()
+        return False
+
+    GLib.timeout_add(500, show_dialog)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -35,7 +35,10 @@ block on a prompt.
 .B verify
 Build into a throwaway prefix and discard it, with no sudo, proving the whole
 stack still fetches, patches, and compiles against the pins without touching the
-real prefix. Run this before bumping an upstream ref.
+real prefix. It then starts the built compositor headless and checks that each
+patch still behaves (the live checks need foot, grim and the GTK3 Python
+bindings, and are reported as skipped without them). Run this before bumping an
+upstream ref.
 .TP
 .B check
 Report whether Wayfire is installed, self-contained by rpath, and its key

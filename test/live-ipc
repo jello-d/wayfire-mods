@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""live-ipc: one wayfire IPC call, for test/live.t.
+
+Usage: live-ipc <socket> <method> [json-data]
+
+Prints the JSON reply on stdout. Exits 0 when a reply arrived (an error
+reply included: the caller judges it), 3 when the connection closed
+without one, which is what a compositor that aborted mid-request looks
+like. stdlib only, so it needs no venv: the wire format is a native
+uint32 length followed by that many bytes of JSON, both ways.
+"""
+import json
+import socket
+import struct
+import sys
+
+
+def call(path, method, data):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(10)
+    sock.connect(path)
+    body = json.dumps({"method": method, "data": data}).encode()
+    sock.sendall(struct.pack("=I", len(body)) + body)
+    head = _read(sock, 4)
+    if head is None:
+        return None
+    reply = _read(sock, struct.unpack("=I", head)[0])
+    return None if reply is None else json.loads(reply)
+
+
+def _read(sock, n):
+    buf = b""
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except (ConnectionResetError, socket.timeout):
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def main(argv):
+    if len(argv) not in (3, 4):
+        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        return 2
+    data = json.loads(argv[3]) if len(argv) == 4 else {}
+    reply = call(argv[1], argv[2], data)
+    if reply is None:
+        print("live-ipc: connection closed with no reply", file=sys.stderr)
+        return 3
+    print(json.dumps(reply))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
