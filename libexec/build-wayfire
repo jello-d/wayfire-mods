@@ -173,10 +173,15 @@ staged wcm "$(pin "$WCM_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
   "$PREFIX/bin/wcm" wcm "$WCM_URL" "$WCM_REF"
 
 say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (clean upstream)"
+# Since 0.11.2 plugins-extra can pull pixdecor and filters in as UNPATCHED
+# wraps. Off by default upstream; pinned off here, because both are built
+# below with our patches and the same .so name would be overwritten by
+# whichever installed last.
 staged plugins-extra \
   "$(pin "$PLUGINS_EXTRA_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
   "$LIBDIR/wayfire/libwater.so" \
-  plugins-extra "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF"
+  plugins-extra "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF" \
+  -Dpixdecor=false -Dfilters=false
 
 # --- our own plugins ---------------------------------------------------------
 say "custom plugins (edge-flipping, workspace-wallpaper, wsync, atlas, ...)"

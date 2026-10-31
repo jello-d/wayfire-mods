@@ -14,19 +14,19 @@ WLROOTS_URL=https://gitlab.freedesktop.org/wlroots/wlroots
 WLROOTS_REF=0.20.2
 
 WAYFIRE_URL=https://github.com/WayfireWM/wayfire
-WAYFIRE_REF=d3990237
+WAYFIRE_REF=e268d4e5ecf62bc0667caf23ff631c2806bdf63e
 
 WCM_URL=https://github.com/WayfireWM/wcm
-WCM_REF=14f2e03fc4bfa3a20d10b913461636363e39240c
+WCM_REF=872077c5f489021f68aee0038b7a533902d6f7c0
 
 PLUGINS_EXTRA_URL=https://github.com/WayfireWM/wayfire-plugins-extra
-PLUGINS_EXTRA_REF=4290ddf13bfadb344d45cb25c47f7825bbdc8a30
+PLUGINS_EXTRA_REF=144af95fe204eaca361783ea2283ca73cb4bdef5
 
 FILTERS_URL=https://github.com/soreau/filters
-FILTERS_REF=8fcaad8192a2be0566a624cfdb20bb101f0d5ca2
+FILTERS_REF=ecfe09aa87e812cd11c13eff60414c106d5accef
 
 WF_INFO_URL=https://github.com/soreau/wf-info
-WF_INFO_REF=2d0127a484f332ffaf1c64a7be199f755d4f68a8
+WF_INFO_REF=8ba3b9cbfd34977c2956ce7a37e2562110635d44
 
 PIXDECOR_URL=https://github.com/soreau/pixdecor
-PIXDECOR_REF=76a0e8996b41f0df87f0d9c65c816693f1c3fefc
+PIXDECOR_REF=d74909d3056565a8f2cbfbc33c6951960d486e63
