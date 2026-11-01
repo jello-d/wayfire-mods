@@ -15,15 +15,17 @@ index 1bdc5a4f..ab60d069 100644
  </wayfire>
 diff --git a/plugins/common/wayfire/plugins/common/security-context.hpp b/plugins/common/wayfire/plugins/common/security-context.hpp
 new file mode 100644
-index 00000000..8c04dc1e
+index 00000000..f39044fb
 --- /dev/null
 +++ b/plugins/common/wayfire/plugins/common/security-context.hpp
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,67 @@
 +#pragma once
 +
 +#include <functional>
 +#include <optional>
 +#include <string>
++#include <vector>
++#include <wayfire/signal-provider.hpp>
 +#include <wayfire/plugins/common/shared-core-data.hpp>
 +
 +struct wl_client;
@@ -45,12 +47,27 @@ index 00000000..8c04dc1e
 +};
 +
 +/**
-+ * Shared between plugins with wf::shared_data::ref_ptr_t<registry_t>. The
-+ * security-context-v1 plugin fills in `lookup` while it is loaded.
++ * on: registry_t
++ * when: A sandbox engine committed a new security context, before any client
++ *   can connect through it. A plugin that keeps per-context state (one global
++ *   per sandbox instance, say) creates it here, so it exists by the time the
++ *   sandboxed clients bind.
 + */
-+struct registry_t
++struct context_committed_signal
++{
++    context_info_t info;
++};
++
++/**
++ * Shared between plugins with wf::shared_data::ref_ptr_t<registry_t>. The
++ * security-context-v1 plugin fills it in while it is loaded: `lookup`, every
++ * context committed so far (`committed`, for a plugin loaded later), and
++ * emits context_committed_signal for each new one.
++ */
++struct registry_t : public wf::signal::provider_t
 +{
 +    std::function<std::optional<context_info_t>(const wl_client*)> lookup;
++    std::vector<context_info_t> committed;
 +};
 +
 +/**
@@ -70,20 +87,21 @@ index 00000000..8c04dc1e
 +}
 +}
 diff --git a/plugins/protocols/security-context-v1.cpp b/plugins/protocols/security-context-v1.cpp
-index 258ba38a..a73bdadc 100644
+index 258ba38a..b57c4a01 100644
 --- a/plugins/protocols/security-context-v1.cpp
 +++ b/plugins/protocols/security-context-v1.cpp
-@@ -3,7 +3,9 @@
+@@ -3,7 +3,10 @@
  #include "wayfire/plugin.hpp"
  #include "wayfire/nonstd/wlroots-full.hpp"
  #include "wayfire/util/log.hpp"
++#include "wayfire/util.hpp"
 +#include <wayfire/plugins/common/security-context.hpp>
  #include <set>
 +#include <sstream>
  
  class wayfire_security_context_v1 : public wf::plugin_interface_t
  {
-@@ -22,48 +24,91 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+@@ -22,48 +25,115 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
          filter = core.create_global_filter();
          filter->set_filter([this] (const wl_client *client, const wl_global *global)
          {
@@ -128,30 +146,38 @@ index 258ba38a..a73bdadc 100644
 -            // Allow everything else
 -            return true;
 -        });
-+            return wf::security_context::context_info_t{
-+                ctx->sandbox_engine ?: "",
-+                ctx->app_id ?: "",
-+                ctx->instance_id ?: "",
-+            };
++            return to_info(ctx);
 +        };
  
 -        update_privileged();
 -        privileged.set_callback([this] () { update_privileged(); });
+-    }
++        on_commit.set_callback([this] (void *data) { handle_commit(data); });
+ 
+-    bool is_privileged_protocol(const wl_global *global)
+-    {
+-        auto name = wl_global_get_interface(global)->name;
+-        return parsed_privileged.count(std::string(name));
++        on_commit.connect(&manager->events.commit);
++
 +        update_lists();
 +        privileged.set_callback([this] () { update_lists(); });
 +        allowed.set_callback([this] () { update_lists(); });
      }
  
--    bool is_privileged_protocol(const wl_global *global)
+-    void update_privileged()
 +    static std::set<std::string> parse_list(const std::string& list)
      {
--        auto name = wl_global_get_interface(global)->name;
--        return parsed_privileged.count(std::string(name));
+-        parsed_privileged.clear();
+-
+-        std::istringstream iss(privileged);
 +        std::set<std::string> result;
 +        std::istringstream iss(list);
-+        std::string token;
-+        while (std::getline(iss, token, ','))
-+        {
+         std::string token;
+         while (std::getline(iss, token, ','))
+         {
+-            LOGD("Marking protocol \"", token, "\" as privileged");
+-            parsed_privileged.insert(token);
 +            auto first = token.find_first_not_of(" \t");
 +            if (first == std::string::npos)
 +            {
@@ -160,19 +186,13 @@ index 258ba38a..a73bdadc 100644
 +
 +            auto last = token.find_last_not_of(" \t");
 +            result.insert(token.substr(first, last - first + 1));
-+        }
+         }
 +
 +        return result;
-     }
- 
--    void update_privileged()
++    }
++
 +    void update_lists()
-     {
--        parsed_privileged.clear();
--
--        std::istringstream iss(privileged);
--        std::string token;
--        while (std::getline(iss, token, ','))
++    {
 +        parsed_privileged = parse_list(privileged);
 +        parsed_allowed    = parse_list(allowed);
 +        if (parsed_allowed.empty())
@@ -180,22 +200,44 @@ index 258ba38a..a73bdadc 100644
 +            LOGI("security-context-v1: denylist mode, ", parsed_privileged.size(),
 +                " protocol(s) hidden from sandboxed clients");
 +        } else
-         {
--            LOGD("Marking protocol \"", token, "\" as privileged");
--            parsed_privileged.insert(token);
++        {
 +            LOGI("security-context-v1: allowlist mode, sandboxed clients see only ",
 +                parsed_allowed.size(), " protocol(s)");
-         }
++        }
++    }
++
++    static wf::security_context::context_info_t to_info(
++        const wlr_security_context_v1_state *state)
++    {
++        return wf::security_context::context_info_t{
++            state->sandbox_engine ?: "",
++            state->app_id ?: "",
++            state->instance_id ?: "",
++        };
++    }
++
++    wf::wl_listener_wrapper on_commit;
++
++    void handle_commit(void *data)
++    {
++        auto ev   = (wlr_security_context_v1_commit_event*)data;
++        auto info = to_info(ev->state);
++        LOGI("security-context-v1: context committed (engine '", info.sandbox_engine,
++            "', instance '", info.instance_id, "')");
++        registry->committed.push_back(info);
++        wf::security_context::context_committed_signal signal{info};
++        registry->emit(&signal);
      }
  
      void fini() override
      {
 -        // everything will be auto-destroyed.
++        on_commit.disconnect();
 +        registry->lookup = nullptr;
      }
  
      bool is_unloadable() override
-@@ -74,9 +119,12 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+@@ -74,9 +144,12 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
    private:
      wlr_security_context_manager_v1 *manager = nullptr;
      std::unique_ptr<wf::wayland_global_filter_t> filter;
