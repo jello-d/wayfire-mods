@@ -83,6 +83,15 @@ fetch() {   # <name> <url> <ref>  -> populate $SRC/<name> at <ref>
   git -C "$_d" submodule update --init --recursive
 }
 
+# pristine <srcdir> <ref>: back to exactly <ref> before patches re-apply.
+# reset alone keeps UNTRACKED files, so a file a patch CREATED on the last run
+# survives it and the next `git apply` refuses to create it again. clean -fd
+# (not -x, not -ff) removes those and leaves ignored files and submodules.
+pristine() {
+  git -C "$1" reset --hard "$2" >/dev/null
+  git -C "$1" clean -fdq
+}
+
 build() {   # <srcdir> [meson args...]  -> install into $PREFIX
   _dir=$1; shift
   _tag=${_dir#"$SRC"/}; _tag=${_tag#"$PLUGINS"}; _tag=${_tag:-plugins}
@@ -112,7 +121,7 @@ _patched() {
   if in_sync "$_pn" "$_pw" "$_pa"; then echo "  $_pn in sync ($_pr)"; return 0
   fi
   fetch "$_ps" "$_pu" "$_pr"
-  git -C "$SRC/$_ps" reset --hard "$_pr" >/dev/null
+  pristine "$SRC/$_ps" "$_pr"
   for _p in "$@"; do
     ( cd "$SRC/$_ps" && git apply --check "$PATCHES/$_p" \
         && git apply "$PATCHES/$_p" ) || {
@@ -140,17 +149,18 @@ fi
 
 # --- wayfire: our patches ----------------------------------------------------
 say "wayfire $WAYFIRE_REF (+ our patches)"
+# The ONE list of wayfire patches, in apply order: the stamp and the apply
+# loop both read it, so a patch cannot be applied without forcing a rebuild.
+WAYFIRE_PATCHES="wayfire-ipc-guard-dialog-output wayfire-startup-image
+  wayfire-scale-clamp"
 _w=$(pin "$WAYFIRE_REF" "$WLROOTS_REF" \
-  "$(cat "$PATCHES"/wayfire-ipc-guard-dialog-output.patch \
-        "$PATCHES"/wayfire-startup-image.patch \
-        "$PATCHES"/wayfire-scale-clamp.patch)")
+  "$(for _p in $WAYFIRE_PATCHES; do cat "$PATCHES/$_p.patch"; done)")
 if in_sync wayfire "$_w" "$PREFIX/bin/wayfire"; then
   echo "  wayfire in sync ($WAYFIRE_REF)"
 else
   fetch wayfire "$WAYFIRE_URL" "$WAYFIRE_REF"
-  git -C "$SRC/wayfire" reset --hard "$WAYFIRE_REF" >/dev/null
-  for _p in wayfire-ipc-guard-dialog-output wayfire-startup-image \
-            wayfire-scale-clamp; do
+  pristine "$SRC/wayfire" "$WAYFIRE_REF"
+  for _p in $WAYFIRE_PATCHES; do
     ( cd "$SRC/wayfire" && git apply --check "$PATCHES/$_p.patch" \
         && git apply "$PATCHES/$_p.patch" ) || {
       echo "build: $_p did not apply (wayfire drift from $WAYFIRE_REF?)" >&2
