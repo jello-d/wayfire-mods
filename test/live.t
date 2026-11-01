@@ -30,6 +30,11 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   activation      xdg-activation across sandbox boundaries, seven cases:
+#                   a token from an enclave activates only its own enclave's
+#                   windows; a personal token activates anything; a token
+#                   with no creating surface cannot pull focus INTO an enclave
+#                   (stock honours all seven)
 #
 # Two compositor runs, so the scale-0.5 crash on stock cannot hide the other
 # checks. All checks run and report; the test fails if any did. A caller's
@@ -48,6 +53,7 @@ python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null \
   || skip "needs the GTK3 python bindings"
 
 WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; TICK_PID=; FAILS=0
+ACT_PIDS=
 # The test allowlist, in C sort order: what a sandboxed client must see,
 # exactly. foot needs subcompositor and the data device to map at all, and
 # with no decoration protocol listed it must draw its own decorations.
@@ -55,24 +61,32 @@ WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; TICK_PID=; FAILS=0
 ALLOW="ext_foreign_toplevel_image_capture_source_manager_v1
   ext_foreign_toplevel_list_v1 ext_image_copy_capture_manager_v1
   wl_compositor wl_data_device_manager wl_output wl_seat wl_shm
-  wl_subcompositor xdg_wm_base"
+  wl_subcompositor xdg_activation_v1 xdg_wm_base"
 ALLOW=$(printf '%s\n' $ALLOW | tr '\n' ' ' | sed 's/ $//')
 MARK="255 0 255"
 PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark
-  toplevel-capture"
+  toplevel-capture xdg-activation"
 PLUGINS=$(printf '%s ' $PLUGINS | sed 's/ $//')
 
 _live_stop() {
-  for _p in $TICK_PID $ENC_PID $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
+  for _p in $ACT_PIDS $TICK_PID $ENC_PID $SC_PID $DLG_PID $FOOT_PID \
+    $WF_PID; do
     kill "$_p" 2>/dev/null || :
   done
-  TICK_PID=; ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
+  ACT_PIDS=; TICK_PID=; ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
 }
 # Re-armed with the client cleanup in front; T was checked by harness_init
 # and is baked in as a literal, as there.
 _lc="'$T'"
+# WFM_LIVE_KEEP=<dir>: copy the scratch tree (logs, client output) there
+# before it is removed, to debug a failure after the fact.
+_live_keep() {
+  [ -n "${WFM_LIVE_KEEP:-}" ] || return 0
+  mkdir -p "$WFM_LIVE_KEEP" && cp -r "$T/." "$WFM_LIVE_KEEP/" 2>/dev/null
+  printf 'live: scratch tree kept in %s\n' "$WFM_LIVE_KEEP" >&2
+}
 # shellcheck disable=SC2064  # expanding NOW is the point
-trap "_live_stop; rm -rf -- $_lc" EXIT INT TERM
+trap "_live_stop; _live_keep; rm -rf -- $_lc" EXIT INT TERM
 
 check() {   # <name> <0 = pass> <detail>
   if [ "$2" = 0 ]; then printf '  ok   %s: %s\n' "$1" "$3"
@@ -124,10 +138,31 @@ build_capture() {
     || fail "could not build the capture test client"
 }
 
+# build_activate: test/live-activate.c, with the virtual-keyboard protocol
+# vendored in test/protocols (wlroots ships it but installs no copy)
+build_activate() {
+  _d=$(pkg-config --variable=pkgdatadir wayland-protocols)
+  for _x in "$_d/stable/xdg-shell/xdg-shell.xml" \
+            "$_d/staging/xdg-activation/xdg-activation-v1.xml" \
+            "$HERE/test/protocols/virtual-keyboard-unstable-v1.xml"; do
+    [ -f "$_x" ] || skip "needs $_x"
+    _n=$(basename "$_x" .xml)
+    wayland-scanner client-header "$_x" "$T/$_n-client-protocol.h"
+    wayland-scanner private-code "$_x" "$T/$_n-protocol.c"
+  done
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -o "$T/activate" "$HERE/test/live-activate.c" \
+    "$T/xdg-shell-protocol.c" "$T/xdg-activation-v1-protocol.c" \
+    "$T/virtual-keyboard-unstable-v1-protocol.c" -I"$T" \
+    $(pkg-config --cflags --libs wayland-client) \
+    || fail "could not build the activation test client"
+}
+
 write_fixtures() {
   mkdir -m 0700 "$T/data"
   build_secctx
   build_capture
+  build_activate
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
   python3 -I -c 'import sys; sys.stdout.buffer.write(
     b"P6\n64 64\n255\n" + b"\xff\x00\x00" * 4096)' > "$T/start.ppm"
@@ -417,6 +452,75 @@ check_toplevel_capture() {
   check toplevel-capture "$_ok" "$_detail"
 }
 
+# act_display <personal|titan|work>: the socket a client of that side uses
+act_display() {
+  case $1 in personal) echo "$WLD" ;; titan) echo "$S/ctx.sock" ;;
+    *) echo "$S/ctx-$1.sock" ;; esac
+}
+
+# until_true <shell condition>: poll it for up to 5s; returns its last status
+until_true() {
+  _u=0
+  until eval "$1"; do
+    _u=$((_u + 1)); [ "$_u" -lt 50 ] || return 1; sleep 0.1
+  done
+}
+focused_app() {
+  ipc window-rules/get-focused-view | jpy "d['info']['app-id']"
+}
+
+# act_case <creator side> <target side> <surface|nosurface>: one activation.
+# Appends to $_got: "a" if the target took focus (honoured), "c" if the
+# creator kept it, "x" no token, "?" no request. Runs in THIS shell, never in
+# $(...): a subshell would lose the case counter and the recorded PIDs.
+act_case() {
+  _n=$((_n + 1)); _ci=$S/c$_n.in; _ai=$S/a$_n.in
+  mkfifo "$_ci" "$_ai"
+  WAYLAND_DISPLAY=$(act_display "$1") XDG_RUNTIME_DIR=$RUN "$T/activate" \
+    token "c$_n" < "$_ci" > "$S/c$_n.out" 2> "$S/c$_n.err" &
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 7> "$_ci"
+  WAYLAND_DISPLAY=$(act_display "$2") XDG_RUNTIME_DIR=$RUN "$T/activate" \
+    activate "a$_n" < "$_ai" > "$S/a$_n.out" 2>&1 &
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 8> "$_ai"
+  wait_view "v['app-id'] == 'a$_n'" > /dev/null
+  _c=$(wait_view "v['app-id'] == 'c$_n'" | jpy "d['id']")
+  ipc window-rules/focus-view "{\"id\": $_c}" > /dev/null
+  # Wait on the CONDITIONS, never a fixed sleep: the session is busy (a
+  # software renderer, earlier checks' clients), and a token minted before
+  # focus lands is refused for a reason unrelated to this test.
+  until_true "[ \"\$(focused_app)\" = c$_n ]"
+  sleep 0.2   # the enter event, and its serial, reach the client
+  echo "$3" >&7
+  until_true "grep -q '^token' '$S/c$_n.out'"
+  _tok=$(sed -n 's/^token //p' "$S/c$_n.out")
+  printf '%s\n' "$_tok" >&8
+  until_true "grep -q requested '$S/a$_n.out'"
+  sleep 0.3   # the focus change, if any, is applied
+  if [ -z "$_tok" ]; then _got=${_got}x
+  elif ! grep -q requested "$S/a$_n.out"; then _got=$_got'?'
+  else _got=$_got$(focused_app | cut -c1)
+  fi
+  exec 7>&- 8>&-
+}
+
+check_activation() {
+  client actctx "$T/secctx" "$S/ctx-work.sock" work; ACT_PIDS=$!
+  client kbd "$T/activate" kbd; ACT_PIDS="$ACT_PIDS $!"
+  sleep 1
+  _n=0; _got=
+  for _c in "titan titan surface" "titan personal surface" \
+            "titan work surface" "personal titan surface" \
+            "personal personal surface" "personal titan nosurface" \
+            "personal personal nosurface"; do
+    # shellcheck disable=SC2086  # the case is three words on purpose
+    act_case $_c
+  done
+  [ "$_got" = accaaca ]
+  check activation $? "got [$_got], want [accaaca] (a: honoured, c: denied)"
+}
+
 # Session 2: two scale-1 outputs, for everything else.
 session_main() {
   write_ini "$T/main.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
@@ -430,10 +534,12 @@ session_main() {
     check_filters "$_foot"
     check_enclave_mark "$_foot"
     check_toplevel_capture
+    check_activation
   else
     check pixdecor 1 "foot never mapped"; check filters 1 "foot never mapped"
     check enclave-mark 1 "foot never mapped"
     check toplevel-capture 1 "foot never mapped"
+    check activation 1 "foot never mapped"
   fi
   client dialog python3 -I "$HERE/test/live-dialog"; DLG_PID=$!
   check_ipc_guard
@@ -444,4 +550,4 @@ write_fixtures
 session_scale
 session_main
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
-pass "8 checks against $P"
+pass "9 checks against $P"

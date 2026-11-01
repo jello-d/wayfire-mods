@@ -1,0 +1,91 @@
+diff --git a/plugins/protocols/xdg-activation.cpp b/plugins/protocols/xdg-activation.cpp
+index d87beee5..86edbed3 100644
+--- a/plugins/protocols/xdg-activation.cpp
++++ b/plugins/protocols/xdg-activation.cpp
+@@ -8,6 +8,8 @@
+ #include <wayfire/nonstd/wlroots-full.hpp>
+ #include <wayfire/window-manager.hpp>
+ #include <wayfire/util.hpp>
++#include <wayfire/plugins/common/security-context.hpp>
++#include <map>
+ #include "config.h"
+ 
+ class wayfire_xdg_activation_protocol_impl : public wf::plugin_interface_t
+@@ -78,6 +80,12 @@ class wayfire_xdg_activation_protocol_impl : public wf::plugin_interface_t
+                 return;
+             }
+ 
++            if (!sandbox_allows(event->token, view))
++            {
++                LOGI("Denying focus request across a security context boundary");
++                return;
++            }
++
+             LOGD("Activating view");
+             wf::get_core().default_wm->focus_request(toplevel);
+         });
+@@ -85,6 +93,7 @@ class wayfire_xdg_activation_protocol_impl : public wf::plugin_interface_t
+         xdg_activation_new_token.set_callback([this] (void *data)
+         {
+             auto token = static_cast<struct wlr_xdg_activation_token_v1*>(data);
++            record_origin(token);
+             if (!token->seat)
+             {
+                 // note: for a valid seat, wlroots already checks that the serial is valid
+@@ -125,6 +134,56 @@ class wayfire_xdg_activation_protocol_impl : public wf::plugin_interface_t
+         }
+     };
+ 
++    /**
++     * Who created a token, as far as security-context-v1 can tell: the client
++     * of the surface it was created from. Recorded at creation, because that
++     * surface may be gone by the time the token is used.
++     */
++    struct token_origin_t
++    {
++        bool attributed = false;
++        std::optional<wf::security_context::context_info_t> ctx;
++        wf::wl_listener_wrapper on_destroy;
++    };
++
++    std::map<wlr_xdg_activation_token_v1*, std::unique_ptr<token_origin_t>> origins;
++
++    void record_origin(wlr_xdg_activation_token_v1 *token)
++    {
++        auto origin = std::make_unique<token_origin_t>();
++        if (token->surface)
++        {
++            origin->attributed = true;
++            origin->ctx = wf::security_context::lookup_client(
++                wl_resource_get_client(token->surface->resource));
++        }
++
++        origin->on_destroy.set_callback([this, token] (void*) { origins.erase(token); });
++        origin->on_destroy.connect(&token->events.destroy);
++        origins[token] = std::move(origin);
++    }
++
++    /**
++     * Focus may move INTO a sandboxed client's window only on a token created
++     * by that same sandbox instance, or by an unsandboxed client; a token
++     * that cannot be attributed is refused there, since focus carries the
++     * user's keystrokes. A sandboxed client's token never activates a window
++     * outside its instance. Without security contexts nothing changes.
++     */
++    bool sandbox_allows(wlr_xdg_activation_token_v1 *token, wayfire_view view)
++    {
++        auto it = origins.find(token);
++        bool attributed = (it != origins.end()) && it->second->attributed;
++        auto creator    = attributed ? it->second->ctx : std::nullopt;
++        auto target     = wf::security_context::lookup_client(view->get_client());
++        if (target)
++        {
++            return attributed && (!creator || (creator->instance_id == target->instance_id));
++        }
++
++        return !creator;
++    }
++
+     struct wlr_xdg_activation_v1 *xdg_activation;
+     wf::wl_listener_wrapper xdg_activation_request_activate;
+     wf::wl_listener_wrapper xdg_activation_new_token;
