@@ -13,8 +13,9 @@
 #      still fetches, patches, and compiles against the pins without touching
 #      /opt, then runs test/live.t on it headless so each patch is proven to
 #      BEHAVE (CI / the check to run before bumping a ref).
-#   check      wayfire installed, self-contained by rpath, key components
-#      present; [OK]/[FAIL] markers.
+#   check      wayfire installed, self-contained by rpath, the installed
+#      build IS this checkout's (build id), key components present;
+#      [OK]/[FAIL] markers.
 #   uninstall  remove the prefix + the build stamps.
 #   test       run the in-repo suite (test/run).
 #   version    the packaged version + the upstream pins.
@@ -119,6 +120,24 @@ do_uninstall() {
   echo "$PKG: removed $WF_PREFIX + build stamps"
 }
 
+# A wayfire being installed is not this checkout being installed: a
+# consumer that reinstalls only when its clone moves would otherwise keep a
+# stale or half-built prefix forever, with this check green.
+check_build_id() {
+  _want=$(env WBM_ROOT="$_root" sh "$_root/libexec/build-wayfire" --build-id)
+  _idf=$WF_PREFIX/share/wayfire-mods/build-id
+  _have=$(cat "$_idf" 2>/dev/null || true)
+  if [ -z "$_have" ]; then
+    bad "no build id at $_idf (an older recipe, or an install that never \
+finished): run setup.sh install"
+  elif [ "$_have" = "$_want" ]; then
+    ok "installed build is this checkout's (build id $_want)"
+  else
+    bad "installed build is NOT this checkout's (installed $_have, this \
+checkout $_want): run setup.sh install"
+  fi
+}
+
 do_check() {
   echo "== $PKG (compositor stack from source) =="
   if [ -x "$WAYFIRE" ]; then ok "wayfire installed ($WAYFIRE)"
@@ -129,6 +148,7 @@ do_check() {
   else
     bad "wayfire has no rpath into $LIBDIR (rebuild: setup.sh install)"
   fi
+  check_build_id
   # key components: our custom plugin + the patched satellites + the tools.
   for _c in "$LIBDIR/wayfire/libedge-flipping.so:custom plugins" \
             "$LIBDIR/wayfire/libpixdecor.so:pixdecor" \

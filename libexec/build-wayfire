@@ -25,9 +25,31 @@
 # consumer declares those). Fails loud via meson if a lib is missing.
 set -eu
 
-PREFIX=${1:?usage: build-wayfire <prefix>}
 : "${WBM_ROOT:?WBM_ROOT (the wayfire-mods repo root) must be set}"
+
+# THE BUILD ID: one hash of everything that decides what this checkout
+# installs (the refs, this recipe, every patch and plugin file). Written into
+# the prefix after a FULLY successful build and compared by `setup.sh check`,
+# so an install that is not this checkout's (stale, or one that died half
+# way) reads as a failure rather than "wayfire is installed". `--build-id`
+# prints it without building, for that check.
+build_id() {
+  { cat "$WBM_ROOT/refs" "$WBM_ROOT/libexec/build-wayfire"
+    find "$WBM_ROOT/patches" "$WBM_ROOT/plugins" -type f | LC_ALL=C sort \
+      | while IFS= read -r _f; do printf '%s\n' "${_f#"$WBM_ROOT"/}"
+        cat "$_f"; done
+  } | cksum | awk '{print $1"-"$2}'
+}
+if [ "${1:-}" = --build-id ]; then
+  build_id
+  exit 0
+fi
+
+PREFIX=${1:?usage: build-wayfire <prefix> | --build-id}
 . "$WBM_ROOT/refs"
+# Taken BEFORE building: the id names the inputs this run actually used,
+# even if the checkout changes while it compiles.
+BUILD_ID=$(build_id)
 
 CACHE=${WBM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wayfire-mods}
 # Every tree this recipe removes (build dirs, the bundled wlroots) sits under
@@ -246,4 +268,11 @@ for _f in "$PREFIX"/bin/* $_sos; do
   fi
 done
 [ "$_missing" = 0 ] || { echo "prefix not self-contained by rpath"; exit 1; }
+# Only now, with every component built and the rpath gate passed: the id is
+# the claim "this prefix is that checkout", so it must not exist for a run
+# that stopped early.
+$SUDO mkdir -p "$PREFIX/share/wayfire-mods"
+printf '%s\n' "$BUILD_ID" \
+  | $SUDO tee "$PREFIX/share/wayfire-mods/build-id" > /dev/null
 echo "wayfire-mods: compositor stack built + installed -> $PREFIX"
+echo "wayfire-mods: build id $BUILD_ID"
