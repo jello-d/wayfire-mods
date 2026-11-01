@@ -15,8 +15,9 @@
 # they too pick up the rpath rather than shadow it with a pre-installed copy.
 #
 # INCREMENTAL: each component skips when its install artifact is present AND its
-# stamp (its pinned ref, plus the wlroots/wayfire refs it links, plus local
-# patch/plugin content) is unchanged. Stamps live in the package cache, so a
+# stamp (its pinned ref, plus the wayfire stage's own stamp, which covers the
+# wlroots/wayfire refs AND our wayfire patches, plus local patch/plugin
+# content) is unchanged. Stamps live in the package cache, so a
 # converged prefix is a seconds-long no-op. Set WBM_NOSTAMP=1 (verify does) to
 # never record a stamp, so a throwaway build cannot make a real build skip.
 #
@@ -116,7 +117,7 @@ staged() {   # <name> <want> <artifact> <src> <url> <ref> [meson args...]
 # The pin folds in every patch's content, so editing a patch forces a rebuild.
 _patched() {
   _pn=$1; _pa=$2; _ps=$3; _pu=$4; _pr=$5; shift 5
-  _pw=$(pin "$_pr" "$WAYFIRE_REF" "$WLROOTS_REF" \
+  _pw=$(pin "$_pr" "$WAYFIRE_STAMP" \
     "$(for _p in "$@"; do cat "$PATCHES/$_p"; done)")
   if in_sync "$_pn" "$_pw" "$_pa"; then echo "  $_pn in sync ($_pr)"; return 0
   fi
@@ -155,6 +156,12 @@ WAYFIRE_PATCHES="wayfire-ipc-guard-dialog-output wayfire-startup-image
   wayfire-scale-clamp wayfire-security-context-allowlist"
 _w=$(pin "$WAYFIRE_REF" "$WLROOTS_REF" \
   "$(for _p in $WAYFIRE_PATCHES; do cat "$PATCHES/$_p.patch"; done)")
+# Everything below builds AGAINST this wayfire, and our patches can change
+# its installed headers (a struct gaining a base class moves every member),
+# so each later stamp folds in this one, not just the two refs. Otherwise a
+# patch edit rebuilds wayfire and leaves a plugin compiled against the old
+# layout: undefined behaviour at runtime, not an error.
+WAYFIRE_STAMP=$_w
 if in_sync wayfire "$_w" "$PREFIX/bin/wayfire"; then
   echo "  wayfire in sync ($WAYFIRE_REF)"
 else
@@ -179,7 +186,7 @@ fi
 
 # --- wcm / plugins-extra: clean upstream ------------------------------------
 say "wcm $WCM_REF"
-staged wcm "$(pin "$WCM_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+staged wcm "$(pin "$WCM_REF" "$WAYFIRE_STAMP")" \
   "$PREFIX/bin/wcm" wcm "$WCM_URL" "$WCM_REF"
 
 say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (clean upstream)"
@@ -188,14 +195,14 @@ say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (clean upstream)"
 # below with our patches and the same .so name would be overwritten by
 # whichever installed last.
 staged plugins-extra \
-  "$(pin "$PLUGINS_EXTRA_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+  "$(pin "$PLUGINS_EXTRA_REF" "$WAYFIRE_STAMP")" \
   "$LIBDIR/wayfire/libwater.so" \
   plugins-extra "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF" \
   -Dpixdecor=false -Dfilters=false
 
 # --- our own plugins ---------------------------------------------------------
 say "custom plugins (edge-flipping, workspace-wallpaper, wsync, atlas, ...)"
-_w=$( { printf '%s\n' "$WAYFIRE_REF" "$WLROOTS_REF"; \
+_w=$( { printf '%s\n' "$WAYFIRE_STAMP"; \
         find "$PLUGINS" -type f \( -name '*.cpp' -o -name '*.hpp' \
           -o -name '*.h' -o -name '*.xml' -o -name 'meson.build' \) \
           | sort | xargs cat; } | hash_of )
@@ -212,7 +219,7 @@ _patched filters "$LIBDIR/wayfire/libfilters.so" filters \
   "$FILTERS_URL" "$FILTERS_REF" filters-frame-margins.patch
 
 say "wf-info $WF_INFO_REF"
-staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_REF" "$WLROOTS_REF")" \
+staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_STAMP")" \
   "$PREFIX/bin/wf-info" wf-info "$WF_INFO_URL" "$WF_INFO_REF"
 
 say "pixdecor $PIXDECOR_REF (+ our patch)"
