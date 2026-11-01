@@ -9,7 +9,8 @@ metadatadir = wayfire.get_variable(pkgconfig : 'metadatadir')
 plugindir   = join_paths(get_option('libdir'), 'wayfire')
 
 plugins = ['edge-flipping', 'workspace-wallpaper', 'wsync',
-           'directional-focus', 'workarea-guard', 'enclave-mark']
+           'directional-focus', 'workarea-guard', 'enclave-mark',
+           'toplevel-capture']
 foreach name : plugins
     shared_module(name, name + '.cpp',
                   dependencies : [wayfire],

@@ -25,6 +25,11 @@
 #                   carries the configured frame just outside its edge; a
 #                   personal window does not; fullscreen moves the frame onto
 #                   the inner edge (stock has no such plugin)
+#   toplevel-capture a sandboxed client's window list holds ONLY its own
+#                   instance's windows while a plain client's holds all; it
+#                   captures its own window's real pixels, cannot even name a
+#                   personal one, and keeps streaming a window that is
+#                   entirely off-screen (stock has no such plugin)
 #
 # Two compositor runs, so the scale-0.5 crash on stock cannot hide the other
 # checks. All checks run and report; the test fails if any did. A caller's
@@ -42,21 +47,26 @@ done
 python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null \
   || skip "needs the GTK3 python bindings"
 
-WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; FAILS=0
+WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; TICK_PID=; FAILS=0
 # The test allowlist, in C sort order: what a sandboxed client must see,
 # exactly. foot needs subcompositor and the data device to map at all, and
 # with no decoration protocol listed it must draw its own decorations.
-ALLOW="wl_compositor wl_data_device_manager wl_output wl_seat wl_shm
+# The three ext_ protocols are the window-sharing set (SV9).
+ALLOW="ext_foreign_toplevel_image_capture_source_manager_v1
+  ext_foreign_toplevel_list_v1 ext_image_copy_capture_manager_v1
+  wl_compositor wl_data_device_manager wl_output wl_seat wl_shm
   wl_subcompositor xdg_wm_base"
 ALLOW=$(printf '%s\n' $ALLOW | tr '\n' ' ' | sed 's/ $//')
 MARK="255 0 255"
-PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark"
+PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark
+  toplevel-capture"
+PLUGINS=$(printf '%s ' $PLUGINS | sed 's/ $//')
 
 _live_stop() {
-  for _p in $ENC_PID $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
+  for _p in $TICK_PID $ENC_PID $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
     kill "$_p" 2>/dev/null || :
   done
-  ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
+  TICK_PID=; ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
 }
 # Re-armed with the client cleanup in front; T was checked by harness_init
 # and is baked in as a literal, as there.
@@ -94,9 +104,30 @@ build_secctx() {
     || fail "could not build the security-context test client"
 }
 
+# build_capture: compile test/live-capture.c against its three protocols
+build_capture() {
+  _d=$(pkg-config --variable=pkgdatadir wayland-protocols)/staging
+  for _x in ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1 \
+            ext-image-capture-source/ext-image-capture-source-v1 \
+            ext-image-copy-capture/ext-image-copy-capture-v1; do
+    [ -f "$_d/$_x.xml" ] || skip "needs wayland-protocols with ${_x#*/}"
+    wayland-scanner client-header "$_d/$_x.xml" \
+      "$T/${_x#*/}-client-protocol.h"
+    wayland-scanner private-code "$_d/$_x.xml" "$T/${_x#*/}-protocol.c"
+  done
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -o "$T/capture" "$HERE/test/live-capture.c" \
+    "$T/ext-foreign-toplevel-list-v1-protocol.c" \
+    "$T/ext-image-capture-source-v1-protocol.c" \
+    "$T/ext-image-copy-capture-v1-protocol.c" -I"$T" \
+    $(pkg-config --cflags --libs wayland-client) \
+    || fail "could not build the capture test client"
+}
+
 write_fixtures() {
   mkdir -m 0700 "$T/data"
   build_secctx
+  build_capture
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
   python3 -I -c 'import sys; sys.stdout.buffer.write(
     b"P6\n64 64\n255\n" + b"\xff\x00\x00" * 4096)' > "$T/start.ppm"
@@ -338,6 +369,54 @@ check_enclave_mark() {   # <personal foot view json>
   fi
 }
 
+# capture_as <display> <args...>: run the capture client as a client of it
+capture_as() {
+  _cd=$1; shift
+  WAYLAND_DISPLAY=$_cd XDG_RUNTIME_DIR=$RUN timeout 10 "$T/capture" "$@" \
+    2>/dev/null
+}
+
+has() { case $1 in *"$2"*) return 0 ;; esac; return 1; }   # <text> <part>
+
+check_toplevel_capture() {
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot --app-id wfm-tick \
+    -o colors.background=00ff00 sh -c \
+    'while :; do printf "\033[2J%s" "$(date +%N)"; sleep 0.2; done' \
+    > "$S/tick.log" 2>&1 &
+  TICK_PID=$!
+  _t=$(wait_view "v['app-id'] == 'wfm-tick'") || {
+    check toplevel-capture 1 "the ticker never mapped"; return; }
+  _mine=$(capture_as "$S/ctx.sock" list | tr '\n' ' ')
+  _all=$(capture_as "$WLD" list | tr '\n' ' ')
+  _own=$(capture_as "$S/ctx.sock" capture wfm-tick)
+  _foreign=$(capture_as "$S/ctx.sock" capture wfm-foot)
+  place "$(printf '%s\n' "$_t" | jpy "d['id']")" 5000 5000 400 300
+  sleep 0.5
+  _stream=$(capture_as "$S/ctx.sock" stream wfm-tick 3)
+  # Resized while streaming (about 0.5s into ~2s of frames): exactly one
+  # frame must be redone at the new size, and the stream must carry on.
+  ( sleep 0.5; place "$(printf '%s\n' "$_t" | jpy "d['id']")" 5000 5000 \
+    500 400 ) &
+  _rz=$!
+  _resize=$(capture_as "$S/ctx.sock" stream wfm-tick 10)
+  # Only the resizer: a bare `wait` also waits for wayfire and every client.
+  wait "$_rz"
+  _detail="sandbox lists [$_mine]; own [$_own]; foreign [$_foreign];"
+  _detail="$_detail off-screen [$_stream]; resized mid-stream [$_resize]"
+  _ok=0
+  has "$_mine" "toplevel wfm-foot" && _ok=1        # a personal window leaked
+  has "$_mine" "toplevel wfm-tick" || _ok=1        # its own window missing
+  has "$_mine" "lists 1" || _ok=1                  # exactly one list
+  has "$_all" "toplevel wfm-foot" || _ok=1         # personal sees everything
+  has "$_all" "toplevel wfm-tick" || _ok=1
+  case $_own in "captured "*" 0 255 0") ;; *) _ok=1 ;; esac
+  [ "$_foreign" = "not found" ] || _ok=1
+  # retries 0: a session opened AFTER the move must be told the new size
+  [ "$_stream" = "streamed 3 retries 0" ] || _ok=1
+  [ "$_resize" = "streamed 10 retries 1" ] || _ok=1
+  check toplevel-capture "$_ok" "$_detail"
+}
+
 # Session 2: two scale-1 outputs, for everything else.
 session_main() {
   write_ini "$T/main.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
@@ -350,9 +429,11 @@ session_main() {
     check_pixdecor "$_foot"
     check_filters "$_foot"
     check_enclave_mark "$_foot"
+    check_toplevel_capture
   else
     check pixdecor 1 "foot never mapped"; check filters 1 "foot never mapped"
     check enclave-mark 1 "foot never mapped"
+    check toplevel-capture 1 "foot never mapped"
   fi
   client dialog python3 -I "$HERE/test/live-dialog"; DLG_PID=$!
   check_ipc_guard
@@ -363,4 +444,4 @@ write_fixtures
 session_scale
 session_main
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
-pass "7 checks against $P"
+pass "8 checks against $P"
