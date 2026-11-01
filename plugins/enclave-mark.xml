@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<wayfire>
+  <plugin name="enclave-mark">
+    <_short>Enclave mark</_short>
+    <_long>Draws a frame around every window whose client connected through a
+    security-context-v1 socket, coloured per sandbox instance. Needs the
+    security-context-v1 plugin.</_long>
+    <category>Desktop</category>
+
+    <option name="thickness" type="int">
+      <_short>Frame thickness</_short>
+      <_long>Frame width in logical pixels.</_long>
+      <default>4</default>
+      <min>1</min>
+      <max>64</max>
+    </option>
+
+    <option name="colors" type="string">
+      <_short>Colours per instance</_short>
+      <_long>Comma-separated instance=colour pairs, keyed by the security
+      context's instance_id. A colour is "r g b a" floats or an ESCAPED hex
+      \#RRGGBBAA (an unescaped # starts an ini comment). An instance not
+      listed gets a stable colour hashed from its name.</_long>
+      <default></default>
+    </option>
+  </plugin>
+</wayfire>

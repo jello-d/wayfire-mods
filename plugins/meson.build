@@ -9,7 +9,7 @@ metadatadir = wayfire.get_variable(pkgconfig : 'metadatadir')
 plugindir   = join_paths(get_option('libdir'), 'wayfire')
 
 plugins = ['edge-flipping', 'workspace-wallpaper', 'wsync',
-           'directional-focus', 'workarea-guard']
+           'directional-focus', 'workarea-guard', 'enclave-mark']
 foreach name : plugins
     shared_module(name, name + '.cpp',
                   dependencies : [wayfire],
@@ -19,7 +19,7 @@ endforeach
 
 # workarea-guard ships no metadata xml (config-less); the rest do.
 install_data('edge-flipping.xml', 'workspace-wallpaper.xml', 'wsync.xml',
-             'directional-focus.xml',
+             'directional-focus.xml', 'enclave-mark.xml',
              install_dir : metadatadir)
 
 # Multi-file plugins live in their own subdir with their own meson.build.

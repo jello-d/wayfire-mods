@@ -21,6 +21,10 @@
 #                   allowed_protocols, while a plain client still sees
 #                   screencopy (stock has no allowlist: its denylist leaks
 #                   everything it does not name)
+#   enclave-mark    a window from that context, drawing its OWN decorations,
+#                   carries the configured frame just outside its edge; a
+#                   personal window does not; fullscreen moves the frame onto
+#                   the inner edge (stock has no such plugin)
 #
 # Two compositor runs, so the scale-0.5 crash on stock cannot hide the other
 # checks. All checks run and report; the test fails if any did. A caller's
@@ -38,15 +42,21 @@ done
 python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null \
   || skip "needs the GTK3 python bindings"
 
-WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; FAILS=0
-# The test allowlist, sorted: what a sandboxed client must see, exactly.
-ALLOW="wl_compositor wl_output wl_seat wl_shm xdg_wm_base"
+WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; FAILS=0
+# The test allowlist, in C sort order: what a sandboxed client must see,
+# exactly. foot needs subcompositor and the data device to map at all, and
+# with no decoration protocol listed it must draw its own decorations.
+ALLOW="wl_compositor wl_data_device_manager wl_output wl_seat wl_shm
+  wl_subcompositor xdg_wm_base"
+ALLOW=$(printf '%s\n' $ALLOW | tr '\n' ' ' | sed 's/ $//')
+MARK="255 0 255"
+PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark"
 
 _live_stop() {
-  for _p in $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
+  for _p in $ENC_PID $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
     kill "$_p" 2>/dev/null || :
   done
-  SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
+  ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
 }
 # Re-armed with the client cleanup in front; T was checked by harness_init
 # and is baked in as a literal, as there.
@@ -113,11 +123,12 @@ EOF
 # write_ini <file> <outputs body>: the shared core section plus outputs
 write_ini() {
   { printf '%s\n' '[core]' \
-      'plugins = ipc ipc-rules pixdecor filters security-context-v1' \
+      "plugins = $PLUGINS" \
       'preferred_decoration_mode = server' 'xwayland = false' '' \
       '[pixdecor]' 'title_font = sans 24' 'border_size = 4' '' \
       '[security-context-v1]' \
-      "allowed_protocols = $(printf '%s' "$ALLOW" | sed 's/ /, /g')" ''
+      "allowed_protocols = $(printf '%s' "$ALLOW" | sed 's/ /, /g')" '' \
+      '[enclave-mark]' 'thickness = 6' 'colors = titan=1.0 0.0 1.0 1.0' ''
     printf '%s\n' "$2"; } > "$1"
 }
 
@@ -243,7 +254,8 @@ check_ipc_guard() {
 # sorted (unique: there is one wl_output global per output)
 interfaces() {
   WAYLAND_DISPLAY=$1 XDG_RUNTIME_DIR=$RUN wayland-info 2>/dev/null \
-    | sed -n "s/^interface: '\([^']*\)'.*/\1/p" | sort -u | tr '\n' ' ' \
+    | sed -n "s/^interface: '\([^']*\)'.*/\1/p" | LC_ALL=C sort -u \
+    | tr '\n' ' ' \
     | sed 's/ $//'
 }
 
@@ -270,6 +282,62 @@ check_secctx() {
   fi
 }
 
+# pixel <x> <y>: the "r g b" of one pixel of the session, layout coords
+pixel() {
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN grim -g "$1,$2 1x1" -t ppm - \
+    | python3 -I -c 'import sys; print(*sys.stdin.buffer.read()[-3:])'
+}
+
+# place <view id> <x> <y> <w> <h> [fullscreen]: onto HEADLESS-1, in its
+# local coordinates. Do not assume where it sits in the layout (measured: at
+# x=1280, after HEADLESS-2): `at` turns local coordinates into layout ones.
+place() {
+  _o1=$(jpy "[o['id'] for o in d if o['name'] == 'HEADLESS-1'][0]" \
+    < "$S/outputs.json")
+  ipc window-rules/configure-view "{\"id\": $1, \"output_id\": $_o1,
+    \"fullscreen\": ${6:-false}, \"geometry\": {\"x\": $2, \"y\": $3,
+    \"width\": $4, \"height\": $5}}" > /dev/null
+}
+
+# where <view id>: its output and geometry, for a failure message
+where() {
+  ipc window-rules/view-info "{\"id\": $1}" | jpy "'view %d on %s at %s' % (
+    d['info']['id'], d['info']['output-name'], d['info']['geometry'])"
+}
+
+at() {   # <local x> <local y>: the HEADLESS-1 pixel there, layout coords
+  _ox=$(jpy "[int(o['geometry']['x']) for o in d
+    if o['name'] == 'HEADLESS-1'][0]" < "$S/outputs.json")
+  _oy=$(jpy "[int(o['geometry']['y']) for o in d
+    if o['name'] == 'HEADLESS-1'][0]" < "$S/outputs.json")
+  pixel $((_ox + $1)) $((_oy + $2))
+}
+
+check_enclave_mark() {   # <personal foot view json>
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+    --app-id wfm-enclave sleep 600 > "$S/enclave.log" 2>&1 &
+  ENC_PID=$!
+  if ! _e=$(wait_view "v['app-id'] == 'wfm-enclave'"); then
+    check enclave-mark 1 "the enclave foot never mapped: $(tail -n 1 \
+      "$S/enclave.log")"; return
+  fi
+  _eid=$(printf '%s\n' "$_e" | jpy "d['id']")
+  _pid=$(printf '%s\n' "$1" | jpy "d['id']")
+  place "$_eid" 100 100 400 300; place "$_pid" 700 100 400 300
+  sleep 1
+  _em=$(at 97 250); _pm=$(at 697 250)
+  place "$_eid" 0 0 1280 720 true
+  sleep 1
+  _fs=$(at 2 360)
+  if [ "$_em" = "$MARK" ] && [ "$_pm" != "$MARK" ] && [ "$_fs" = "$MARK" ]
+  then check enclave-mark 0 "framed [$_em], personal [$_pm], fullscreen [$_fs]"
+  else check enclave-mark 1 \
+    "enclave [$_em] personal [$_pm] fullscreen [$_fs] (mark is [$MARK]);
+    $(where "$_eid"); $(where "$_pid"); outputs $(jpy "[(o['name'],
+    o['geometry']) for o in d]" < "$S/outputs.json")"
+  fi
+}
+
 # Session 2: two scale-1 outputs, for everything else.
 session_main() {
   write_ini "$T/main.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
@@ -281,8 +349,10 @@ session_main() {
   if _foot=$(wait_view "v['app-id'] == 'wfm-foot'"); then
     check_pixdecor "$_foot"
     check_filters "$_foot"
+    check_enclave_mark "$_foot"
   else
     check pixdecor 1 "foot never mapped"; check filters 1 "foot never mapped"
+    check enclave-mark 1 "foot never mapped"
   fi
   client dialog python3 -I "$HERE/test/live-dialog"; DLG_PID=$!
   check_ipc_guard
@@ -293,4 +363,4 @@ write_fixtures
 session_scale
 session_main
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
-pass "6 checks against $P"
+pass "7 checks against $P"
