@@ -48,8 +48,15 @@ PLUGINS=$WBM_ROOT/plugins
 # Anonymous public clones: keep a login user's insteadOf-ssh git identity from
 # turning these https clones into ssh ones that die on a fresh box.
 export GIT_CONFIG_GLOBAL=/dev/null
-# Chain every later build onto the prefix we are populating.
-export PKG_CONFIG_PATH="$LIBDIR/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+# Chain every later build onto the prefix we are populating, and ONLY that
+# prefix: the caller's PKG_CONFIG_PATH is dropped, not appended. A session
+# that exports another wayfire's pkgconfig (drydock's env prepends
+# /opt/wayfire's, so plugins can be built against it) otherwise makes meson
+# find THAT wf-config and skip building its own, and a throwaway prefix then
+# holds a wayfire that cannot load (libwf-config.so.1 not found; measured on
+# manifold 2026-11-01, verify broke at the first login with that env).
+# System packages still resolve: pkg-config searches its default dirs anyway.
+export PKG_CONFIG_PATH="$LIBDIR/pkgconfig:$PREFIX/share/pkgconfig"
 
 mkdir -p "$CACHE" "$SRC" "$STAMPS"
 cd "$CACHE"   # meson realpaths the CWD; keep it a dir that exists

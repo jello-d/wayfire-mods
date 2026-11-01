@@ -13,6 +13,11 @@ for _p in "$HERE"/patches/*.patch; do
   grep -qF "$_b" "$_r" || fail "patch $_b not referenced by the recipe"
 done
 [ -f "$HERE/plugins/meson.build" ] || fail "plugins/meson.build missing"
+# The recipe must never INHERIT the caller's PKG_CONFIG_PATH: a session that
+# exports another wayfire's pkgconfig made a throwaway build link against it
+# and fail to load. Only its own prefix may be on the path.
+grep -q '\${PKG_CONFIG_PATH' "$_r" \
+  && fail "the recipe expands the caller's PKG_CONFIG_PATH"
 # the recipe names each upstream ref var; refs must define them
 . "$HERE/refs"
 for _v in WLROOTS_REF WAYFIRE_REF WCM_REF PLUGINS_EXTRA_REF FILTERS_REF \
