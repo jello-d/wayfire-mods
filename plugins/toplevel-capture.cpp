@@ -43,6 +43,7 @@
 extern "C"
 {
 #include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
+#include <wlr/render/swapchain.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
@@ -89,7 +90,10 @@ class view_source_t
   public:
     source_wrap_t wrap;
     wayfire_toplevel_view view;
-    wf::auxilliary_buffer_t buffer;
+    // Frames are rendered straight into this swapchain's buffers, which are
+    // what the copy-capture session copies from (GPU to GPU for a dmabuf
+    // client). Recreated at each size change.
+    wlr_swapchain *swapchain = nullptr;
     std::vector<wf::scene::render_instance_uptr> instances;
     int started   = 0;
     bool dirty    = true;
@@ -238,13 +242,18 @@ view_source_t::~view_source_t()
     on_geometry.disconnect();
     instances.clear();
     wlr_ext_image_capture_source_v1_finish(&wrap.base);
+    if (swapchain)
+    {
+        wlr_swapchain_destroy(swapchain);
+    }
 }
 
-// Size from the window geometry at the output's scale, offered as ARGB/XRGB
-// shm. NOT dmabuf yet: wlroots 0.20 keeps the renderer's render-format query
-// internal, and guessing modifiers would offer buffers the copy cannot fill.
-// shm is universally supported (xdg-desktop-portal-wlr included), at the cost
-// of a CPU readback per frame. True when the constraints changed.
+// Size from the window geometry at the output's scale. The format comes from
+// a swapchain made at that size in the OUTPUT's own format and modifiers, and
+// wlroots derives the constraints from it: shm, plus dmabuf (that format and
+// ARGB/XRGB fallbacks) where the allocator and renderer can do dmabuf. That
+// keeps wlroots' render-format query, private in 0.20, on wlroots' side. On
+// a software renderer it simply offers shm. True when the constraints changed.
 bool view_source_t::update_constraints()
 {
     auto out   = view->get_output();
@@ -252,19 +261,33 @@ bool view_source_t::update_constraints()
     auto box   = window_box(view);
     uint32_t w = std::max(1, (int)std::round(box.width * scale));
     uint32_t h = std::max(1, (int)std::round(box.height * scale));
-    if ((wrap.base.width == w) && (wrap.base.height == h) &&
-        wrap.base.shm_formats)
+    if (swapchain && (wrap.base.width == w) && (wrap.base.height == h))
     {
         return false;
     }
 
-    wrap.base.width  = w;
-    wrap.base.height = h;
-    static const uint32_t formats[] = {DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888};
-    free(wrap.base.shm_formats);
-    wrap.base.shm_formats = (uint32_t*)malloc(sizeof(formats));
-    memcpy(wrap.base.shm_formats, formats, sizeof(formats));
-    wrap.base.shm_formats_len = 2;
+    // No output swapchain yet: ARGB8888 with an implicit modifier.
+    uint64_t implicit = DRM_FORMAT_MOD_INVALID;
+    wlr_drm_format fallback{DRM_FORMAT_ARGB8888, 1, 1, &implicit};
+    const wlr_drm_format *fmt = (out && out->handle->swapchain) ?
+        &out->handle->swapchain->format : &fallback;
+    auto& core = wf::get_core();
+    auto next  = wlr_swapchain_create(core.allocator, w, h, fmt);
+    if (!next)
+    {
+        LOGE("toplevel-capture: no ", w, "x", h, " swapchain for view ",
+            view->get_id(), "; this window cannot be captured");
+        return false;
+    }
+
+    if (swapchain)
+    {
+        wlr_swapchain_destroy(swapchain);
+    }
+
+    swapchain = next;
+    wlr_ext_image_capture_source_v1_set_constraints_from_swapchain(&wrap.base,
+        swapchain, core.renderer);
     wl_signal_emit_mutable(&wrap.base.events.constraints_update, nullptr);
     return true;
 }
@@ -277,12 +300,16 @@ void view_source_t::produce_frame()
     }
 
     update_constraints();
+    wlr_buffer *buffer = swapchain ? wlr_swapchain_acquire(swapchain) : nullptr;
+    if (!buffer)
+    {
+        return;
+    }
+
     auto box = window_box(view);
     float scale = view->get_output()->handle->scale;
-    buffer.allocate({(int)wrap.base.width, (int)wrap.base.height}, 1.0,
-        wf::buffer_allocation_hints_t{.needs_alpha = true});
-
-    wf::render_target_t target{buffer};
+    wf::render_target_t target{wf::render_buffer_t(buffer,
+        {(int)wrap.base.width, (int)wrap.base.height})};
     target.geometry = box;
     target.scale    = scale;
     wf::render_pass_params_t params;
@@ -298,12 +325,15 @@ void view_source_t::produce_frame()
     pixman_region32_init_rect(&damage, 0, 0, wrap.base.width, wrap.base.height);
     frame_event_t event{};
     event.base.damage = &damage;
-    event.buffer = buffer.get_buffer();
+    event.buffer = buffer;
     clock_gettime(CLOCK_MONOTONIC, &event.when);
     dirty    = false;
     wanted   = false;
     rendered = true;
+    // Sessions copy synchronously inside this emit, so the buffer can go
+    // back to the swapchain right after.
     wl_signal_emit_mutable(&wrap.base.events.frame, &event.base);
+    wlr_buffer_unlock(buffer);
     pixman_region32_fini(&damage);
     keep_client_drawing(event.when);
 }
@@ -460,7 +490,10 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped =
         [=] (wf::view_mapped_signal *ev) { track(ev->view); };
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
-        [=] (wf::view_unmapped_signal *ev) { ev->view->erase_data(RECORD_DATA); };
+        [=] (wf::view_unmapped_signal *ev)
+    {
+        ev->view->erase_data(RECORD_DATA);
+    };
     wf::signal::connection_t<wf::view_title_changed_signal> on_title =
         [=] (wf::view_title_changed_signal *ev) { update(ev->view); };
     wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id =
@@ -478,9 +511,11 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     void init() override
     {
         auto display = wf::get_core().display;
-        personal = wlr_ext_foreign_toplevel_list_v1_create(display, LIST_VERSION);
-        manager  = wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(
-            display, 1);
+        personal = wlr_ext_foreign_toplevel_list_v1_create(display,
+            LIST_VERSION);
+        manager =
+            wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(
+                display, 1);
         on_new_request.set_callback([=] (void *data) { handle_request(data); });
         on_new_request.connect(&manager->events.new_request);
 
@@ -518,8 +553,9 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
 
 void wayfire_toplevel_capture::handle_request(void *data)
 {
-    auto req = (wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request*)
-        data;
+    using request_t =
+        wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request;
+    auto req = (request_t*)data;
     auto rec = req->toplevel_handle ?
         (toplevel_record_t*)req->toplevel_handle->data : nullptr;
     auto requester = sc::lookup_client(req->client);

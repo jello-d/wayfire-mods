@@ -30,6 +30,11 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   capture-gpu     on a real GPU (a session of its own, only when a render
+#                   node is usable and libgbm is present; otherwise a loud
+#                   skip line): a window captures into a dmabuf of a format
+#                   and modifier the session offered, AND into shm, both
+#                   with the window's real pixels (stock: no such plugin)
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -88,7 +93,9 @@ _live_keep() {
 # shellcheck disable=SC2064  # expanding NOW is the point
 trap "_live_stop; _live_keep; rm -rf -- $_lc" EXIT INT TERM
 
+CHECKS=0
 check() {   # <name> <0 = pass> <detail>
+  CHECKS=$((CHECKS + 1))
   if [ "$2" = 0 ]; then printf '  ok   %s: %s\n' "$1" "$3"
   else printf '  FAIL %s: %s\n' "$1" "$3"; FAILS=$((FAILS + 1)); fi
 }
@@ -136,6 +143,26 @@ build_capture() {
     "$T/ext-image-copy-capture-v1-protocol.c" -I"$T" \
     $(pkg-config --cflags --libs wayland-client) \
     || fail "could not build the capture test client"
+  build_capture_gbm "$_d"
+}
+
+# build_capture_gbm <staging dir>: the same client WITH_GBM, for the GPU
+# session; absent (and that session skipped, loudly) without libgbm
+build_capture_gbm() {
+  pkg-config --exists gbm || return 0
+  _x=$(pkg-config --variable=pkgdatadir wayland-protocols)
+  _x=$_x/stable/linux-dmabuf/linux-dmabuf-v1.xml
+  [ -f "$_x" ] || return 0
+  wayland-scanner client-header "$_x" "$T/linux-dmabuf-v1-client-protocol.h"
+  wayland-scanner private-code "$_x" "$T/linux-dmabuf-v1-protocol.c"
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -DWITH_GBM -o "$T/capture-gbm" "$HERE/test/live-capture.c" \
+    "$T/ext-foreign-toplevel-list-v1-protocol.c" \
+    "$T/ext-image-capture-source-v1-protocol.c" \
+    "$T/ext-image-copy-capture-v1-protocol.c" \
+    "$T/linux-dmabuf-v1-protocol.c" -I"$T" \
+    $(pkg-config --cflags --libs wayland-client gbm) \
+    || fail "could not build the GPU capture test client"
 }
 
 # build_activate: test/live-activate.c, with the virtual-keyboard protocol
@@ -438,11 +465,16 @@ check_enclave_mark() {   # <personal foot view json>
   fi
 }
 
-# capture_as <display> <args...>: run the capture client as a client of it
+# capture_as <display> <client args...> [/path/to/client]: run the capture
+# client on that display; a trailing absolute path picks another build (the
+# GPU session's gbm one). `list` has one argument, `stream` three.
 capture_as() {
   _cd=$1; shift
-  WAYLAND_DISPLAY=$_cd XDG_RUNTIME_DIR=$RUN timeout 10 "$T/capture" "$@" \
-    2>/dev/null
+  _cb=$T/capture
+  if [ "$#" = 3 ]; then
+    case $3 in /*) _cb=$3; set -- "$1" "$2" ;; esac
+  fi
+  WAYLAND_DISPLAY=$_cd XDG_RUNTIME_DIR=$RUN timeout 10 "$_cb" "$@" 2>/dev/null
 }
 
 has() { case $1 in *"$2"*) return 0 ;; esac; return 1; }   # <text> <part>
@@ -580,8 +612,37 @@ session_main() {
   _live_stop
 }
 
+# Session 3: the same capture, on a real GPU, so a dmabuf path exists.
+session_gpu() {
+  _rn=
+  for _n in /dev/dri/renderD*; do
+    [ -r "$_n" ] && [ -w "$_n" ] && { _rn=$_n; break; }
+  done
+  if [ -z "$_rn" ] || [ ! -x "$T/capture-gbm" ]; then
+    _why=${_rn:+no libgbm}
+    printf '  skip capture-gpu: %s\n' "${_why:-no usable render node}"
+    return
+  fi
+  write_ini "$T/gpu.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
+    'mode = 1280x720@60000')"
+  WLR_RENDER_DRM_DEVICE=$_rn start_wayfire "$T/s3" "$T/gpu.ini" 1
+  client gpu-win foot -o colors.background=00ff00 --app-id wfm-gpu sleep 600
+  FOOT_PID=$!
+  wait_view "v['app-id'] == 'wfm-gpu'" > /dev/null \
+    || { check capture-gpu 1 "the window never mapped"; _live_stop; return; }
+  _dma=$(capture_as "$WLD" capture-dmabuf wfm-gpu "$T/capture-gbm")
+  _shm=$(capture_as "$WLD" capture wfm-gpu "$T/capture-gbm")
+  _ok=1
+  case "$_dma|$_shm" in
+    "captured-dmabuf "*" 0 255 0 mod "*"|captured "*" 0 255 0") _ok=0 ;;
+  esac
+  check capture-gpu "$_ok" "on $_rn: dmabuf [$_dma]; shm [$_shm]"
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
+session_gpu
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
-pass "9 checks against $P"
+pass "$CHECKS checks against $P"
