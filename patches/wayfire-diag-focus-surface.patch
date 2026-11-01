@@ -1,0 +1,25 @@
+diff --git a/src/core/window-manager.cpp b/src/core/window-manager.cpp
+index cf9ff4f9..9581bb53 100644
+--- a/src/core/window-manager.cpp
++++ b/src/core/window-manager.cpp
+@@ -8,6 +8,7 @@
+ #include <wayfire/workarea.hpp>
+ #include <wayfire/signal-definitions.hpp>
+ #include <wayfire/workspace-set.hpp>
++#include <wayfire/dassert.hpp>
+ #include <wayfire/txn/transaction-manager.hpp>
+ #include <wayfire/view-helpers.hpp>
+ #include <wayfire/seat.hpp>
+@@ -143,7 +144,11 @@ void window_manager_t::focus_raise_view(wayfire_view view, bool allow_switch_ws)
+ 
+     if (!view->get_keyboard_focus_surface())
+     {
+-        LOGW("Attempting to give focus to a view without focus surface!");
++        LOGW("Attempting to give focus to a view without focus surface! (view ",
++            view->get_id(), ", app-id \"", view->get_app_id(), "\", mapped ",
++            view->is_mapped(), ")");
++        // wayfire-mods DIAGNOSTIC, temporary: name the caller of this rare path.
++        wf::print_trace(true);
+         return;
+     }
+ 
