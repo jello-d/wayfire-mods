@@ -15,6 +15,21 @@
       <max>64</max>
     </option>
 
+    <option name="label" type="bool">
+      <_short>Name tab</_short>
+      <_long>Show the instance name on a tab right-aligned on the frame's top
+      edge, above the window, in the frame colour.</_long>
+      <default>true</default>
+    </option>
+
+    <option name="label_size" type="int">
+      <_short>Name tab font size</_short>
+      <_long>Font size of the name tab, in logical pixels.</_long>
+      <default>11</default>
+      <min>6</min>
+      <max>48</max>
+    </option>
+
     <option name="colors" type="string">
       <_short>Colours per instance</_short>
       <_long>Comma-separated instance=colour pairs, keyed by the security

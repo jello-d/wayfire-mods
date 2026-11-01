@@ -20,6 +20,10 @@
 // ESCAPED hex: `titan=1 0.5 0 1, work=\#3366FFFF`. An unescaped `#` starts a
 // comment in wayfire.ini, so `titan=#FF8800FF` arrives as `titan=` (logged
 // and skipped).
+// LABEL: the instance name, on a tab in the frame colour, right-aligned on
+// the frame's top edge and sitting above the window (inside the top-right
+// corner when fullscreen), so it covers none of the client's pixels.
+//
 // An instance not listed gets a stable colour hashed from its name, so two
 // enclaves always differ and an unlisted sandbox is still marked.
 
@@ -33,6 +37,7 @@
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/view.hpp>
+#include <wayfire/plugins/common/cairo-util.hpp>
 #include <wayfire/plugins/common/security-context.hpp>
 #include <cmath>
 #include <map>
@@ -86,6 +91,8 @@ std::string trim(const std::string& s)
 struct mark_style_t
 {
     int thickness = 4;
+    bool label    = true;
+    int label_size = 11;
     std::map<std::string, wf::color_t> colors;
 
     wf::color_t color_for(const std::string& instance) const
@@ -101,6 +108,13 @@ class mark_node_t : public wf::scene::node_t
     const mark_style_t *style;
     std::string instance;
     wf::geometry_t last_box{0, 0, 0, 0};
+
+    // The instance name, rendered at the scale it was last drawn at.
+    wf::cairo_text_t label;
+    float label_scale = 0;
+    wf::color_t label_color{0, 0, 0, 0};
+    int label_size = 0;
+    wf::dimensions_t label_px{0, 0};
 
   public:
     mark_node_t(wayfire_toplevel_view view, const mark_style_t *style,
@@ -133,7 +147,7 @@ class mark_node_t : public wf::scene::node_t
     }
 
     // The frame's outer box: outside the window, or ON it when fullscreen.
-    wf::geometry_t get_bounding_box() override
+    wf::geometry_t frame_box()
     {
         auto box = window_box();
         if (!box)
@@ -151,6 +165,86 @@ class mark_node_t : public wf::scene::node_t
             box->height + 2 * t};
     }
 
+    // Render the name if anything that shapes it changed: the scale it is
+    // drawn at (crisp on HiDPI), the instance colour, or the font size.
+    void update_label(float scale)
+    {
+        auto c = style->color_for(instance);
+        if ((scale == label_scale) && (c == label_color) &&
+            (style->label_size == label_size))
+        {
+            return;
+        }
+
+        // Black or white, whichever reads on the instance colour.
+        double lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+        wf::color_t ink = lum > 0.5 ? wf::color_t{0, 0, 0, 1} :
+            wf::color_t{1, 1, 1, 1};
+        wf::cairo_text_t::params par(style->label_size, c, ink, scale);
+        par.rounded_rect = false;
+        // The texture must BE the tab: without exact_size the helper draws
+        // the text centred on a larger default surface (measured 400x100 for
+        // a 47x22 label), which scaled into the tab box became a dot.
+        par.exact_size = true;
+        label_px    = label.render_text(instance.empty() ? "sandbox" : instance,
+            par);
+        label_scale = scale;
+        label_color = c;
+        label_size  = style->label_size;
+    }
+
+    float output_scale()
+    {
+        auto v = view.lock();
+        return (v && v->get_output()) ? v->get_output()->handle->scale : 1.0;
+    }
+
+    // The name tab: right-aligned on the frame's top edge, sitting ABOVE the
+    // window so it covers none of the client's own pixels (for a client that
+    // draws its own titlebar, that is where its tabs and buttons are). When
+    // fullscreen there is no outside, so it tucks inside the top-right corner.
+    std::optional<wf::geometry_t> tab_box()
+    {
+        auto box = window_box();
+        if (!style->label || !box)
+        {
+            return {};
+        }
+
+        float scale = output_scale();
+        update_label(scale);
+        double w = label_px.width / scale, h = label_px.height / scale;
+        double t = style->thickness;
+        if (w + 2 * t > box->width)
+        {
+            return {};   // no room: the frame alone still marks it
+        }
+
+        if (fullscreen())
+        {
+            return wf::geometry_t{box->x + box->width - t - w, box->y + t,
+                w, h};
+        }
+
+        return wf::geometry_t{box->x + box->width + t - w, box->y - t - h,
+            w, h};
+    }
+
+    wf::geometry_t get_bounding_box() override
+    {
+        auto f   = frame_box();
+        auto tab = tab_box();
+        if (!tab)
+        {
+            return f;
+        }
+
+        double x1 = std::min(f.x, tab->x), y1 = std::min(f.y, tab->y);
+        double x2 = std::max(f.x + f.width, tab->x + tab->width);
+        double y2 = std::max(f.y + f.height, tab->y + tab->height);
+        return {x1, y1, x2 - x1, y2 - y1};
+    }
+
     // Damage where the frame was and where it is now (after a move, resize
     // or fullscreen change), so neither a stale nor a missing edge remains.
     void refresh()
@@ -163,7 +257,18 @@ class mark_node_t : public wf::scene::node_t
 
     void render(const wf::scene::render_instruction_t& data)
     {
-        auto b = get_bounding_box();
+        render_frame(data);
+        if (auto tab = tab_box())
+        {
+            update_label(data.target.scale);
+            data.pass->add_texture(label.get_texture(), data.target, *tab,
+                data.damage);
+        }
+    }
+
+    void render_frame(const wf::scene::render_instruction_t& data)
+    {
+        auto b = frame_box();
         double t = style->thickness;
         if ((b.width <= 2 * t) || (b.height <= 2 * t))
         {
@@ -186,7 +291,10 @@ class mark_node_t : public wf::scene::node_t
         std::shared_ptr<mark_node_t> self;
         wf::scene::damage_callback push_damage;
         wf::signal::connection_t<wf::scene::node_damage_signal> on_damage =
-            [=] (wf::scene::node_damage_signal *ev) { push_damage(ev->region); };
+            [=] (wf::scene::node_damage_signal *ev)
+        {
+            push_damage(ev->region);
+        };
 
       public:
         render_instance_t(mark_node_t *self, wf::scene::damage_callback push)
@@ -236,12 +344,16 @@ struct mark_data_t : public wf::custom_data_t
 class wayfire_enclave_mark : public wf::plugin_interface_t
 {
     wf::option_wrapper_t<int> thickness{"enclave-mark/thickness"};
+    wf::option_wrapper_t<bool> label{"enclave-mark/label"};
+    wf::option_wrapper_t<int> label_size{"enclave-mark/label_size"};
     wf::option_wrapper_t<std::string> colors{"enclave-mark/colors"};
     mark_style_t style;
 
     void load_style()
     {
-        style.thickness = std::max(1, (int)thickness);
+        style.thickness  = std::max(1, (int)thickness);
+        style.label      = label;
+        style.label_size = std::max(6, (int)label_size);
         style.colors.clear();
         std::istringstream iss((std::string)colors);
         std::string entry;
@@ -312,6 +424,8 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
     {
         load_style();
         thickness.set_callback([=] { load_style(); });
+        label.set_callback([=] { load_style(); });
+        label_size.set_callback([=] { load_style(); });
         colors.set_callback([=] { load_style(); });
         wf::get_core().connect(&on_mapped);
         wf::get_core().connect(&on_geometry);

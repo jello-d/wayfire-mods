@@ -11,9 +11,14 @@ plugindir   = join_paths(get_option('libdir'), 'wayfire')
 plugins = ['edge-flipping', 'workspace-wallpaper', 'wsync',
            'directional-focus', 'workarea-guard', 'enclave-mark',
            'toplevel-capture']
+# Per-plugin extras beyond wayfire itself: enclave-mark draws its name tab
+# with wayfire's cairo-util.hpp (cairo + pango).
+extra_deps = {
+    'enclave-mark' : [dependency('cairo'), dependency('pangocairo')],
+}
 foreach name : plugins
     shared_module(name, name + '.cpp',
-                  dependencies : [wayfire],
+                  dependencies : [wayfire] + extra_deps.get(name, []),
                   install      : true,
                   install_dir  : plugindir)
 endforeach

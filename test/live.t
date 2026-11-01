@@ -379,6 +379,30 @@ at() {   # <local x> <local y>: the HEADLESS-1 pixel there, layout coords
   pixel $((_ox + $1)) $((_oy + $2))
 }
 
+# tab_stats <view id>: "<mark> <ink>" pixel counts in the strip just above
+# the view's frame at its right end, where the name tab sits: <mark> in the
+# enclave colour, <ink> in neither that nor the background (the lettering).
+tab_stats() {
+  _g=$(ipc window-rules/view-info "{\"id\": $1}" | jpy "'%d %d %d' % (
+    d['info']['geometry']['x'], d['info']['geometry']['y'],
+    d['info']['geometry']['width'])")
+  set -- $_g
+  _ox=$(jpy "[int(o['geometry']['x']) for o in d
+    if o['name'] == 'HEADLESS-1'][0]" < "$S/outputs.json")
+  # thickness 6: the frame's outer right edge is x+w+6, its top is y-6
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN grim -g \
+    "$((_ox + $1 + $3 + 6 - 40)),$(($2 - 6 - 12)) 40x12" -t ppm - \
+    | python3 -I -c 'import sys
+d = sys.stdin.buffer.read()
+px = d[d.index(b"255\n") + 4:]
+mark = ink = 0
+for i in range(0, len(px), 3):
+    p = tuple(px[i:i + 3])
+    if p == (255, 0, 255): mark += 1
+    elif p != (25, 25, 25): ink += 1
+print(mark, ink)'
+}
+
 check_enclave_mark() {   # <personal foot view json>
   WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
     --app-id wfm-enclave sleep 600 > "$S/enclave.log" 2>&1 &
@@ -392,13 +416,23 @@ check_enclave_mark() {   # <personal foot view json>
   place "$_eid" 100 100 400 300; place "$_pid" 700 100 400 300
   sleep 1
   _em=$(at 97 250); _pm=$(at 697 250)
+  _et=$(tab_stats "$_eid"); _pt=$(tab_stats "$_pid")
   place "$_eid" 0 0 1280 720 true
   sleep 1
   _fs=$(at 2 360)
-  if [ "$_em" = "$MARK" ] && [ "$_pm" != "$MARK" ] && [ "$_fs" = "$MARK" ]
-  then check enclave-mark 0 "framed [$_em], personal [$_pm], fullscreen [$_fs]"
+  # The name tab: mostly the enclave colour with lettering on it, and
+  # nothing of the kind above a personal window.
+  _tab=1
+  # shellcheck disable=SC2086  # "<mark> <ink>", two numbers
+  set -- $_et $_pt
+  [ "$1" -gt 150 ] && [ "$2" -gt 5 ] && [ "$3" = 0 ] && _tab=0
+  if [ "$_em" = "$MARK" ] && [ "$_pm" != "$MARK" ] && [ "$_fs" = "$MARK" ] \
+    && [ "$_tab" = 0 ]
+  then check enclave-mark 0 \
+    "framed [$_em], personal [$_pm], fullscreen [$_fs], tab [$_et]"
   else check enclave-mark 1 \
-    "enclave [$_em] personal [$_pm] fullscreen [$_fs] (mark is [$MARK]);
+    "enclave [$_em] personal [$_pm] fullscreen [$_fs] tab [$_et] personal-tab
+    [$_pt] (mark is [$MARK]);
     $(where "$_eid"); $(where "$_pid"); outputs $(jpy "[(o['name'],
     o['geometry']) for o in d]" < "$S/outputs.json")"
   fi
