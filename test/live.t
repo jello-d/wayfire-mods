@@ -17,6 +17,10 @@
 #   filters         a shader reading `frame_margins` sees the titlebar
 #   ipc-guard       moving a dialog to another output is refused over IPC
 #                   and the compositor survives (stock aborts on a dassert)
+#   security-ctx    a client through a security-context socket sees EXACTLY
+#                   allowed_protocols, while a plain client still sees
+#                   screencopy (stock has no allowlist: its denylist leaks
+#                   everything it does not name)
 #
 # Two compositor runs, so the scale-0.5 crash on stock cannot hide the other
 # checks. All checks run and report; the test fails if any did. A caller's
@@ -28,17 +32,21 @@ harness_init live
 P=${WFM_LIVE_PREFIX:-}
 [ -n "$P" ] || skip "set WFM_LIVE_PREFIX to a built prefix"
 [ -x "$P/bin/wayfire" ] || fail "no wayfire under $P"
-for _c in foot grim python3; do
+for _c in foot grim python3 wayland-info wayland-scanner cc pkg-config; do
   command -v "$_c" >/dev/null 2>&1 || skip "needs $_c"
 done
 python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null \
   || skip "needs the GTK3 python bindings"
 
-WF_PID=; FOOT_PID=; DLG_PID=; FAILS=0
+WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; FAILS=0
+# The test allowlist, sorted: what a sandboxed client must see, exactly.
+ALLOW="wl_compositor wl_output wl_seat wl_shm xdg_wm_base"
 
 _live_stop() {
-  for _p in $DLG_PID $FOOT_PID $WF_PID; do kill "$_p" 2>/dev/null || :; done
-  DLG_PID=; FOOT_PID=; WF_PID=
+  for _p in $SC_PID $DLG_PID $FOOT_PID $WF_PID; do
+    kill "$_p" 2>/dev/null || :
+  done
+  SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
 }
 # Re-armed with the client cleanup in front; T was checked by harness_init
 # and is baked in as a literal, as there.
@@ -62,8 +70,23 @@ died() {
     || echo 'no fatal line in its log')"
 }
 
+# build_secctx: compile test/live-secctx.c against the staging protocol
+build_secctx() {
+  _x=$(pkg-config --variable=pkgdatadir wayland-protocols)
+  _x=$_x/staging/security-context/security-context-v1.xml
+  [ -f "$_x" ] || skip "needs wayland-protocols with security-context-v1"
+  wayland-scanner client-header "$_x" "$T/security-context-v1-client-protocol.h"
+  wayland-scanner private-code "$_x" "$T/security-context-v1-protocol.c"
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -o "$T/secctx" "$HERE/test/live-secctx.c" \
+    "$T/security-context-v1-protocol.c" -I"$T" \
+    $(pkg-config --cflags --libs wayland-client) \
+    || fail "could not build the security-context test client"
+}
+
 write_fixtures() {
   mkdir -m 0700 "$T/data"
+  build_secctx
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
   python3 -I -c 'import sys; sys.stdout.buffer.write(
     b"P6\n64 64\n255\n" + b"\xff\x00\x00" * 4096)' > "$T/start.ppm"
@@ -90,9 +113,11 @@ EOF
 # write_ini <file> <outputs body>: the shared core section plus outputs
 write_ini() {
   { printf '%s\n' '[core]' \
-      'plugins = ipc ipc-rules pixdecor filters' \
+      'plugins = ipc ipc-rules pixdecor filters security-context-v1' \
       'preferred_decoration_mode = server' 'xwayland = false' '' \
-      '[pixdecor]' 'title_font = sans 24' 'border_size = 4' ''
+      '[pixdecor]' 'title_font = sans 24' 'border_size = 4' '' \
+      '[security-context-v1]' \
+      "allowed_protocols = $(printf '%s' "$ALLOW" | sed 's/ /, /g')" ''
     printf '%s\n' "$2"; } > "$1"
 }
 
@@ -214,12 +239,44 @@ check_ipc_guard() {
   esac
 }
 
+# interfaces <display>: the distinct global names a client on it is offered,
+# sorted (unique: there is one wl_output global per output)
+interfaces() {
+  WAYLAND_DISPLAY=$1 XDG_RUNTIME_DIR=$RUN wayland-info 2>/dev/null \
+    | sed -n "s/^interface: '\([^']*\)'.*/\1/p" | sort -u | tr '\n' ' ' \
+    | sed 's/ $//'
+}
+
+check_secctx() {
+  client secctx "$T/secctx" "$S/ctx.sock" titan; SC_PID=$!
+  _i=0
+  until grep -q ready "$S/secctx.log" 2>/dev/null; do
+    _i=$((_i + 1))
+    if [ "$_i" -ge 50 ] || ! kill -0 "$SC_PID" 2>/dev/null; then
+      check security-ctx 1 "no context: $(cat "$S/secctx.log")"; return
+    fi
+    sleep 0.1
+  done
+  _seen=$(interfaces "$S/ctx.sock")
+  _plain=$(interfaces "$WLD")
+  if [ "$_seen" != "$ALLOW" ]; then
+    check security-ctx 1 "sandboxed client sees [$_seen], want [$ALLOW]"
+  else
+    case " $_plain " in
+      *" zwlr_screencopy_manager_v1 "*)
+        check security-ctx 0 "sandboxed sees exactly the allowlist" ;;
+      *) check security-ctx 1 "a PLAIN client lost screencopy: [$_plain]" ;;
+    esac
+  fi
+}
+
 # Session 2: two scale-1 outputs, for everything else.
 session_main() {
   write_ini "$T/main.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
     'mode = 1280x720@60000' '' '[output:HEADLESS-2]' 'mode = 1280x720@60000')"
   start_wayfire "$T/s2" "$T/main.ini" 2
   check_startup_image
+  check_secctx
   start_foot
   if _foot=$(wait_view "v['app-id'] == 'wfm-foot'"); then
     check_pixdecor "$_foot"
@@ -236,4 +293,4 @@ write_fixtures
 session_scale
 session_main
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
-pass "5 checks against $P"
+pass "6 checks against $P"

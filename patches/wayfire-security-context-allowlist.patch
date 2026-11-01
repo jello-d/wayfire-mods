@@ -1,0 +1,210 @@
+diff --git a/metadata/security-context-v1.xml b/metadata/security-context-v1.xml
+index 1bdc5a4f..ab60d069 100644
+--- a/metadata/security-context-v1.xml
++++ b/metadata/security-context-v1.xml
+@@ -9,5 +9,10 @@
+ 			<_long>A comma-separated list of privileged protocols, which are not exposed to sandboxed clients.</_long>
+ 			<default>zwlr_foreign_toplevel_manager_v1,zwlr_screencopy_manager_v1,zwlr_data_control_manager_v1,zwp_keyboard_shortcuts_inhibit_manager_v1</default>
+ 		</option>
++		<option name="allowed_protocols" type="string">
++			<_short>Allowed protocols</_short>
++			<_long>A comma-separated list of the only protocols exposed to clients in a security context. When set, it replaces privileged_protocols for those clients, so a protocol that is not listed, including one added by a later version, stays hidden. Empty disables it.</_long>
++			<default></default>
++		</option>
+ 	</plugin>
+ </wayfire>
+diff --git a/plugins/common/wayfire/plugins/common/security-context.hpp b/plugins/common/wayfire/plugins/common/security-context.hpp
+new file mode 100644
+index 00000000..8c04dc1e
+--- /dev/null
++++ b/plugins/common/wayfire/plugins/common/security-context.hpp
+@@ -0,0 +1,50 @@
++#pragma once
++
++#include <functional>
++#include <optional>
++#include <string>
++#include <wayfire/plugins/common/shared-core-data.hpp>
++
++struct wl_client;
++
++namespace wf
++{
++namespace security_context
++{
++/**
++ * The metadata a client's security context was committed with (see the
++ * security-context-v1 protocol). Each field is empty when the context did not
++ * set it.
++ */
++struct context_info_t
++{
++    std::string sandbox_engine;
++    std::string app_id;
++    std::string instance_id;
++};
++
++/**
++ * Shared between plugins with wf::shared_data::ref_ptr_t<registry_t>. The
++ * security-context-v1 plugin fills in `lookup` while it is loaded.
++ */
++struct registry_t
++{
++    std::function<std::optional<context_info_t>(const wl_client*)> lookup;
++};
++
++/**
++ * The security context @client connected through, or std::nullopt if it did
++ * not connect through one (or the security-context-v1 plugin is not loaded).
++ */
++inline std::optional<context_info_t> lookup_client(const wl_client *client)
++{
++    wf::shared_data::ref_ptr_t<registry_t> registry;
++    if (!registry->lookup || !client)
++    {
++        return std::nullopt;
++    }
++
++    return registry->lookup(client);
++}
++}
++}
+diff --git a/plugins/protocols/security-context-v1.cpp b/plugins/protocols/security-context-v1.cpp
+index 258ba38a..a73bdadc 100644
+--- a/plugins/protocols/security-context-v1.cpp
++++ b/plugins/protocols/security-context-v1.cpp
+@@ -3,7 +3,9 @@
+ #include "wayfire/plugin.hpp"
+ #include "wayfire/nonstd/wlroots-full.hpp"
+ #include "wayfire/util/log.hpp"
++#include <wayfire/plugins/common/security-context.hpp>
+ #include <set>
++#include <sstream>
+ 
+ class wayfire_security_context_v1 : public wf::plugin_interface_t
+ {
+@@ -22,48 +24,91 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+         filter = core.create_global_filter();
+         filter->set_filter([this] (const wl_client *client, const wl_global *global)
+         {
+-            if (!is_privileged_protocol(global))
++            auto ctx = wlr_security_context_manager_v1_lookup_client(manager, client);
++            if (!ctx)
++            {
++                // Not connected through a security context: sees everything.
++                return true;
++            }
++
++            std::string name = wl_global_get_interface(global)->name;
++
++            // Allowlist mode: a sandboxed client sees ONLY the named globals,
++            // whatever its sandbox engine, so a protocol added by a later
++            // wayfire or wlroots stays hidden until it is listed.
++            if (!parsed_allowed.empty())
++            {
++                return parsed_allowed.count(name) > 0;
++            }
++
++            if (!parsed_privileged.count(name))
+             {
+                 return true;
+             }
+ 
+             // Only allow clients without a sandbox engine to see globals, same as Sway's policy
++            return !ctx->sandbox_engine;
++        });
++
++        registry->lookup = [this] (const wl_client *client)
++            -> std::optional<wf::security_context::context_info_t>
++        {
+             auto ctx = wlr_security_context_manager_v1_lookup_client(manager, client);
+-            if (ctx && ctx->sandbox_engine)
++            if (!ctx)
+             {
+-                return false;
++                return std::nullopt;
+             }
+ 
+-            // Allow everything else
+-            return true;
+-        });
++            return wf::security_context::context_info_t{
++                ctx->sandbox_engine ?: "",
++                ctx->app_id ?: "",
++                ctx->instance_id ?: "",
++            };
++        };
+ 
+-        update_privileged();
+-        privileged.set_callback([this] () { update_privileged(); });
++        update_lists();
++        privileged.set_callback([this] () { update_lists(); });
++        allowed.set_callback([this] () { update_lists(); });
+     }
+ 
+-    bool is_privileged_protocol(const wl_global *global)
++    static std::set<std::string> parse_list(const std::string& list)
+     {
+-        auto name = wl_global_get_interface(global)->name;
+-        return parsed_privileged.count(std::string(name));
++        std::set<std::string> result;
++        std::istringstream iss(list);
++        std::string token;
++        while (std::getline(iss, token, ','))
++        {
++            auto first = token.find_first_not_of(" \t");
++            if (first == std::string::npos)
++            {
++                continue;
++            }
++
++            auto last = token.find_last_not_of(" \t");
++            result.insert(token.substr(first, last - first + 1));
++        }
++
++        return result;
+     }
+ 
+-    void update_privileged()
++    void update_lists()
+     {
+-        parsed_privileged.clear();
+-
+-        std::istringstream iss(privileged);
+-        std::string token;
+-        while (std::getline(iss, token, ','))
++        parsed_privileged = parse_list(privileged);
++        parsed_allowed    = parse_list(allowed);
++        if (parsed_allowed.empty())
++        {
++            LOGI("security-context-v1: denylist mode, ", parsed_privileged.size(),
++                " protocol(s) hidden from sandboxed clients");
++        } else
+         {
+-            LOGD("Marking protocol \"", token, "\" as privileged");
+-            parsed_privileged.insert(token);
++            LOGI("security-context-v1: allowlist mode, sandboxed clients see only ",
++                parsed_allowed.size(), " protocol(s)");
+         }
+     }
+ 
+     void fini() override
+     {
+-        // everything will be auto-destroyed.
++        registry->lookup = nullptr;
+     }
+ 
+     bool is_unloadable() override
+@@ -74,9 +119,12 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+   private:
+     wlr_security_context_manager_v1 *manager = nullptr;
+     std::unique_ptr<wf::wayland_global_filter_t> filter;
++    wf::shared_data::ref_ptr_t<wf::security_context::registry_t> registry;
+ 
+     wf::option_wrapper_t<std::string> privileged{"security-context-v1/privileged_protocols"};
++    wf::option_wrapper_t<std::string> allowed{"security-context-v1/allowed_protocols"};
+     std::set<std::string> parsed_privileged;
++    std::set<std::string> parsed_allowed;
+ };
+ 
+ DECLARE_WAYFIRE_PLUGIN(wayfire_security_context_v1);
