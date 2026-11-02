@@ -30,6 +30,11 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   mark-hugs       an enclave window that pixdecor decorates, with shadows and
+#                   rounded corners on (the user's real setup): the frame sits
+#                   on the VISIBLE edge, not a shadow-width out where the
+#                   shadow-inclusive geometry would put it, and its corners
+#                   are rounded like the window's (session 4)
 #   capture-gpu     on a real GPU (a session of its own, only when a render
 #                   node is usable and libgbm is present; otherwise a loud
 #                   skip line): a window captures into a dmabuf of a format
@@ -612,6 +617,61 @@ session_main() {
   _live_stop
 }
 
+# Session 4: pixdecor with shadows and rounded corners, and an enclave window
+# it decorates. pixdecor counts its shadow in the view geometry, which once
+# made the frame float a shadow-width off the window.
+session_hug() {
+  { printf '%s\n' '[core]' "plugins = $PLUGINS" \
+      'preferred_decoration_mode = server' 'xwayland = false' '' \
+      '[pixdecor]' 'border_size = 4' 'overlay_engine = rounded_corners' \
+      'shadow_radius = 8' 'rounded_corner_radius = 12' '' \
+      '[security-context-v1]' \
+      "allowed_protocols = $(printf '%s' "$ALLOW zxdg_decoration_manager_v1" \
+        | sed 's/ /, /g')" '' \
+      '[enclave-mark]' 'thickness = 6' 'colors = titan=1.0 0.0 1.0 1.0' '' \
+      '[output:HEADLESS-1]' 'mode = 1280x720@60000'
+  } > "$T/hug.ini"
+  start_wayfire "$T/s4" "$T/hug.ini" 1
+  client secctx "$T/secctx" "$S/ctx.sock" titan; SC_PID=$!
+  until_true "grep -q ready '$S/secctx.log'"
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+    --app-id wfm-hug sleep 600 > "$S/hug.log" 2>&1 &
+  ENC_PID=$!
+  if ! _h=$(wait_view "v['app-id'] == 'wfm-hug'"); then
+    check mark-hugs 1 "the enclave foot never mapped"; _live_stop; return
+  fi
+  place "$(printf '%s\n' "$_h" | jpy "d['id']")" 100 80 800 500
+  sleep 1
+  check_mark_hugs "$(printf '%s\n' "$_h" | jpy "d['id']")"
+  _live_stop
+}
+
+# check_mark_hugs <view id>: probe the frame against the VISIBLE window,
+# which is the client plus pixdecor's border (4), without its shadow
+check_mark_hugs() {
+  _g=$(ipc window-rules/view-info "{\"id\": $1}" | jpy "'%d %d %d %d %d %d' % (
+    d['info']['base-geometry']['x'], d['info']['base-geometry']['y'],
+    d['info']['base-geometry']['width'], d['info']['base-geometry']['height'],
+    d['info']['base-geometry']['x'] - d['info']['geometry']['x'] - 4,
+    0)")
+  # shellcheck disable=SC2086  # six numbers
+  set -- $_g
+  _vl=$(($1 - 4)); _vr=$(($1 + $3 + 4)); _vb=$(($2 + $4 + 4)); _sh=$5
+  _mid=$(($2 + $4 / 2))
+  _in=$(at $((_vl - 3)) "$_mid")            # in the frame, on the edge
+  _old=$(at $((_vl - _sh - 3)) "$_mid")     # where a shadow-width-out frame was
+  _edge=$(at $((_vr + 5)) $((_vb - 30)))    # right edge, clear of the corner
+  _corner=$(at $((_vr + 5)) $((_vb + 5)))   # the square corner's own pixel
+  _d="shadow $_sh; edge [$_in] shadow-out [$_old] right [$_edge]"
+  _d="$_d corner [$_corner]"
+  if [ "$_in" = "$MARK" ] && [ "$_old" != "$MARK" ] && \
+     [ "$_edge" = "$MARK" ] && [ "$_corner" != "$MARK" ]; then
+    check mark-hugs 0 "$_d"
+  else
+    check mark-hugs 1 "$_d (mark is [$MARK])"
+  fi
+}
+
 # Session 3: the same capture, on a real GPU, so a dmabuf path exists.
 session_gpu() {
   _rn=
@@ -643,6 +703,7 @@ session_gpu() {
 write_fixtures
 session_scale
 session_main
+session_hug
 session_gpu
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

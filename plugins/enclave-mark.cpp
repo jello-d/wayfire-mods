@@ -28,6 +28,7 @@
 // enclaves always differ and an unlisted sandbox is still marked.
 
 #include <wayfire/core.hpp>
+#include <wayfire/config/config-manager.hpp>
 #include <wayfire/option-wrapper.hpp>
 #include <wayfire/plugin.hpp>
 #include <wayfire/render.hpp>
@@ -39,6 +40,7 @@
 #include <wayfire/view.hpp>
 #include <wayfire/plugins/common/cairo-util.hpp>
 #include <wayfire/plugins/common/security-context.hpp>
+#include "pixdecor-shadow.hpp"
 #include <cmath>
 #include <map>
 #include <memory>
@@ -109,6 +111,13 @@ class mark_node_t : public wf::scene::node_t
     std::string instance;
     wf::geometry_t last_box{0, 0, 0, 0};
 
+    // The four corner quarter-rings, when the frame is rounded, rendered for
+    // the radius, thickness, colour and scale in the key.
+    wf::owned_texture_t corners[4];
+    double corner_key_r = -1, corner_key_t = -1;
+    float corner_key_scale = 0;
+    wf::color_t corner_key_c{0, 0, 0, 0};
+
     // The instance name, rendered at the scale it was last drawn at.
     wf::cairo_text_t label;
     float label_scale = 0;
@@ -125,8 +134,11 @@ class mark_node_t : public wf::scene::node_t
             view->shared_from_this());
     }
 
-    // The window geometry (decorations included), in the coordinates of the
-    // view's surface root, which is this node's parent.
+    // The VISIBLE window (titlebar and border included, drop shadow NOT), in
+    // the coordinates of the view's surface root, which is this node's parent.
+    // pixdecor counts its shadow in the view geometry, so without stripping it
+    // the frame floated a shadow-width off the window (measured: 22px around
+    // a jello-titan Chrome with shadow_radius 8).
     std::optional<wf::geometry_t> window_box()
     {
         auto v = view.lock();
@@ -135,7 +147,8 @@ class mark_node_t : public wf::scene::node_t
             return {};
         }
 
-        auto g = v->get_geometry();
+        auto g = wf::shrink_geometry_by_margins(v->get_geometry(),
+            pixdecor_shadow(v));
         auto o = v->get_surface_root_node()->to_global({0, 0});
         return wf::geometry_t{g.x - o.x, g.y - o.y, g.width, g.height};
     }
@@ -226,8 +239,11 @@ class mark_node_t : public wf::scene::node_t
                 w, h};
         }
 
-        return wf::geometry_t{box->x + box->width + t - w, box->y - t - h,
-            w, h};
+        // Right-aligned on the frame's top edge; with rounded corners, on
+        // the straight part of it, clear of the curve.
+        double inset = corner_radius();
+        return wf::geometry_t{box->x + box->width + t - w - inset,
+            box->y - t - h, w, h};
     }
 
     wf::geometry_t get_bounding_box() override
@@ -243,6 +259,78 @@ class mark_node_t : public wf::scene::node_t
         double x2 = std::max(f.x + f.width, tab->x + tab->width);
         double y2 = std::max(f.y + f.height, tab->y + tab->height);
         return {x1, y1, x2 - x1, y2 - y1};
+    }
+
+    // The radius pixdecor rounds this window's corners with, or 0 for a
+    // square frame. pixdecor rounds by `rounded_corner_radius` (measured: a
+    // 12 radius renders as ~11.5px) when its overlay_engine is
+    // "rounded_corners", unless the window is tiled with maximized_shadows
+    // off; never when fullscreen. A window pixdecor does not decorate has no
+    // shadow data and stays square. Read through the config manager, so a
+    // session without pixdecor gets 0 rather than a missing-option error.
+    double corner_radius()
+    {
+        auto v = view.lock();
+        if (!v || fullscreen() || !v->has_data(SHADOW_MARGIN_DATA))
+        {
+            return 0;
+        }
+
+        auto& cfg   = wf::get_core().config;
+        auto engine = cfg->get_option("pixdecor/overlay_engine");
+        auto radius = cfg->get_option("pixdecor/rounded_corner_radius");
+        auto maxsh  = cfg->get_option("pixdecor/maximized_shadows");
+        if (!engine || !radius ||
+            (engine->get_value_str() != "rounded_corners"))
+        {
+            return 0;
+        }
+
+        auto keep = maxsh ?
+            wf::option_type::from_string<bool>(maxsh->get_value_str()) :
+            std::optional<bool>{false};
+        if (v->pending_tiled_edges() && !keep.value_or(false))
+        {
+            return 0;
+        }
+
+        auto r = wf::option_type::from_string<int>(radius->get_value_str());
+        return std::max(0, r.value_or(0));
+    }
+
+    // Quarter-rings for the four corners (TL, TR, BR, BL): inner radius r,
+    // outer r + t, so the ring follows the window's own rounded corner.
+    void update_corners(double r, double t, const wf::color_t& c, float scale)
+    {
+        if ((r == corner_key_r) && (t == corner_key_t) &&
+            (scale == corner_key_scale) && (c == corner_key_c))
+        {
+            return;
+        }
+
+        int px = std::max(1, (int)std::ceil((r + t) * scale));
+        static const double cx[4] = {1, 0, 0, 1}, cy[4] = {1, 1, 0, 0};
+        for (int k = 0; k < 4; k++)
+        {
+            auto surface =
+                cairo_image_surface_create(CAIRO_FORMAT_ARGB32, px, px);
+            auto cr = cairo_create(surface);
+            double a0 = M_PI + k * M_PI / 2, a1 = a0 + M_PI / 2;
+            cairo_new_path(cr);
+            cairo_arc(cr, cx[k] * px, cy[k] * px, px, a0, a1);
+            cairo_arc_negative(cr, cx[k] * px, cy[k] * px, r * scale, a1, a0);
+            cairo_close_path(cr);
+            cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a);
+            cairo_fill(cr);
+            cairo_destroy(cr);
+            corners[k] = wf::owned_texture_t{surface};
+            cairo_surface_destroy(surface);
+        }
+
+        corner_key_r = r;
+        corner_key_t = t;
+        corner_key_scale = scale;
+        corner_key_c     = c;
     }
 
     // Damage where the frame was and where it is now (after a move, resize
@@ -277,13 +365,53 @@ class mark_node_t : public wf::scene::node_t
 
         auto c = style->color_for(instance);
         auto& p = *data.pass;
-        p.add_rect(c, data.target, {b.x, b.y, b.width, t}, data.damage);
-        p.add_rect(c, data.target, {b.x, b.y + b.height - t, b.width, t},
-            data.damage);
-        p.add_rect(c, data.target, {b.x, b.y + t, t, b.height - 2 * t},
+        // R: how far each corner piece reaches along the edges. Square, it
+        // is the thickness; rounded, the ring's outer radius.
+        double r = corner_radius();
+        double R = r + t;
+        if ((r > 0) && ((b.width < 2 * R) || (b.height < 2 * R)))
+        {
+            r = 0;
+            R = t;
+        }
+
+        p.add_rect(c, data.target, {b.x + R, b.y, b.width - 2 * R, t},
             data.damage);
         p.add_rect(c, data.target,
-            {b.x + b.width - t, b.y + t, t, b.height - 2 * t}, data.damage);
+            {b.x + R, b.y + b.height - t, b.width - 2 * R, t}, data.damage);
+        p.add_rect(c, data.target, {b.x, b.y + R, t, b.height - 2 * R},
+            data.damage);
+        p.add_rect(c, data.target,
+            {b.x + b.width - t, b.y + R, t, b.height - 2 * R}, data.damage);
+        render_corners(data, b, r, t, c);
+    }
+
+    void render_corners(const wf::scene::render_instruction_t& data,
+        const wf::geometry_t& b, double r, double t, const wf::color_t& c)
+    {
+        auto& p  = *data.pass;
+        double R = r + t;
+        const wf::geometry_t at[4] = {
+            {b.x, b.y, R, R}, {b.x + b.width - R, b.y, R, R},
+            {b.x + b.width - R, b.y + b.height - R, R, R},
+            {b.x, b.y + b.height - R, R, R},
+        };
+        if (r <= 0)
+        {
+            for (auto& corner : at)
+            {
+                p.add_rect(c, data.target, corner, data.damage);
+            }
+
+            return;
+        }
+
+        update_corners(r, t, c, data.target.scale);
+        for (int k = 0; k < 4; k++)
+        {
+            p.add_texture(corners[k].get_texture(), data.target, at[k],
+                data.damage);
+        }
     }
 
     class render_instance_t : public wf::scene::render_instance_t
