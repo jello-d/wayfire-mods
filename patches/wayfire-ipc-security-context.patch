@@ -1,0 +1,31 @@
+diff --git a/plugins/ipc-rules/ipc-rules-common.hpp b/plugins/ipc-rules/ipc-rules-common.hpp
+index b4d9553c..337a544b 100644
+--- a/plugins/ipc-rules/ipc-rules-common.hpp
++++ b/plugins/ipc-rules/ipc-rules-common.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include "wayfire/plugins/common/shared-core-data.hpp"
++#include "wayfire/plugins/common/security-context.hpp"
+ #include "wayfire/plugins/ipc/ipc-helpers.hpp"
+ #include "wayfire/plugins/ipc/ipc-method-repository.hpp"
+ #include <wayfire/output.hpp>
+@@ -211,6 +212,19 @@ static inline wf::json_t view_to_json(wayfire_view view)
+     description["always-on-top"]    = view->has_data("wm-actions-above");
+     description["always-on-bottom"] = view->has_data("wm-actions-below");
+ 
++    // The security context (security-context-v1) the view's client connected
++    // through. ABSENT for a client outside any context, PRESENT (possibly with
++    // empty fields, when the sandbox engine set none) for one inside: three
++    // states, so "unsandboxed" is never confused with "sandboxed, unnamed".
++    if (auto ctx = wf::security_context::lookup_client(view->get_client()))
++    {
++        wf::json_t sc;
++        sc["sandbox-engine"] = ctx->sandbox_engine;
++        sc["app-id"]      = ctx->app_id;
++        sc["instance-id"] = ctx->instance_id;
++        description["security-context"] = sc;
++    }
++
+     return description;
+ }
+ 

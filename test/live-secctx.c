@@ -3,7 +3,9 @@
  * listener on the compositor named by WAYLAND_DISPLAY, the way a sandbox
  * engine (Flatpak, or severance for an enclave) does, then wait to be
  * killed. Every client that connects to <socket-path> is in that context.
- * Prints "ready" once the context is committed. For test/live.t.
+ * Prints "ready" once the context is committed. An <instance-id> of "-"
+ * sets NO metadata at all (engine, app_id, instance_id all unset), the
+ * "sandboxed but unnamed" case. For test/live.t.
  *
  * The close fd is the read end of a pipe whose write end this process
  * holds, so the context is torn down when this process exits.
@@ -79,9 +81,11 @@ int main(int argc, char **argv)
   struct wp_security_context_v1 *ctx =
     wp_security_context_manager_v1_create_listener(manager, listen_fd,
                                                    close_fds[0]);
-  wp_security_context_v1_set_sandbox_engine(ctx, "wayfire-mods-test");
-  wp_security_context_v1_set_app_id(ctx, "wfm-test");
-  wp_security_context_v1_set_instance_id(ctx, argv[2]);
+  if (strcmp(argv[2], "-") != 0) {
+    wp_security_context_v1_set_sandbox_engine(ctx, "wayfire-mods-test");
+    wp_security_context_v1_set_app_id(ctx, "wfm-test");
+    wp_security_context_v1_set_instance_id(ctx, argv[2]);
+  }
   wp_security_context_v1_commit(ctx);
   close(listen_fd);
   close(close_fds[0]);

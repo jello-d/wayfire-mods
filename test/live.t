@@ -25,6 +25,10 @@
 #                   carries the configured frame just outside its edge; a
 #                   personal window does not; fullscreen moves the frame onto
 #                   the inner edge (stock has no such plugin)
+#   ipc-context     the IPC view description carries the client's security
+#                   context: absent for a personal window, the engine /
+#                   app-id / instance for an enclave one, and present but
+#                   EMPTY for a context that named nothing (three states)
 #   toplevel-capture a sandboxed client's window list holds ONLY its own
 #                   instance's windows while a plain client's holds all; it
 #                   captures its own window's real pixels, cannot even name a
@@ -63,6 +67,7 @@ python3 -c 'import gi; gi.require_version("Gtk", "3.0")' 2>/dev/null \
   || skip "needs the GTK3 python bindings"
 
 WF_PID=; FOOT_PID=; DLG_PID=; SC_PID=; ENC_PID=; TICK_PID=; FAILS=0
+CTX_PIDS=
 ACT_PIDS=
 # The test allowlist, in C sort order: what a sandboxed client must see,
 # exactly. foot needs subcompositor and the data device to map at all, and
@@ -79,11 +84,12 @@ PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark
 PLUGINS=$(printf '%s ' $PLUGINS | sed 's/ $//')
 
 _live_stop() {
-  for _p in $ACT_PIDS $TICK_PID $ENC_PID $SC_PID $DLG_PID $FOOT_PID \
-    $WF_PID; do
+  for _p in $CTX_PIDS $ACT_PIDS $TICK_PID $ENC_PID $SC_PID $DLG_PID \
+    $FOOT_PID $WF_PID; do
     kill "$_p" 2>/dev/null || :
   done
-  ACT_PIDS=; TICK_PID=; ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=; WF_PID=
+  CTX_PIDS=; ACT_PIDS=; TICK_PID=; ENC_PID=; SC_PID=; DLG_PID=; FOOT_PID=
+  WF_PID=
 }
 # Re-armed with the client cleanup in front; T was checked by harness_init
 # and is baked in as a literal, as there.
@@ -470,6 +476,35 @@ check_enclave_mark() {   # <personal foot view json>
   fi
 }
 
+# context_of <view id>: its IPC security-context, as "absent" or
+# "engine|app-id|instance"
+context_of() {
+  ipc window-rules/view-info "{\"id\": $1}" | jpy "'absent' if
+    'security-context' not in d['info'] else '|'.join((
+    d['info']['security-context'].get('sandbox-engine', '?'),
+    d['info']['security-context'].get('app-id', '?'),
+    d['info']['security-context'].get('instance-id', '?')))"
+}
+
+check_ipc_context() {   # <personal foot view json>
+  client anonctx "$T/secctx" "$S/ctx-anon.sock" -; CTX_PIDS=$!
+  until_true "grep -q ready '$S/anonctx.log'"
+  WAYLAND_DISPLAY=$S/ctx-anon.sock XDG_RUNTIME_DIR=$RUN foot \
+    -c "$T/foot.ini" --app-id wfm-anon sleep 600 > "$S/anon.log" 2>&1 &
+  CTX_PIDS="$CTX_PIDS $!"
+  _a=$(wait_view "v['app-id'] == 'wfm-anon'" | jpy "d['id']")
+  _e=$(wait_view "v['app-id'] == 'wfm-enclave'" | jpy "d['id']")
+  _p=$(printf '%s\n' "$1" | jpy "d['id']")
+  _cp=$(context_of "$_p"); _ce=$(context_of "$_e"); _ca=$(context_of "$_a")
+  _d="personal [$_cp] enclave [$_ce] unnamed [$_ca]"
+  if [ "$_cp" = absent ] && [ "$_ce" = "wayfire-mods-test|wfm-test|titan" ] \
+     && [ "$_ca" = "||" ]; then
+    check ipc-context 0 "$_d"
+  else
+    check ipc-context 1 "$_d"
+  fi
+}
+
 # capture_as <display> <client args...> [/path/to/client]: run the capture
 # client on that display; a trailing absolute path picks another build (the
 # GPU session's gbm one). `list` has one argument, `stream` three.
@@ -604,11 +639,13 @@ session_main() {
     check_pixdecor "$_foot"
     check_filters "$_foot"
     check_enclave_mark "$_foot"
+    check_ipc_context "$_foot"
     check_toplevel_capture
     check_activation
   else
     check pixdecor 1 "foot never mapped"; check filters 1 "foot never mapped"
     check enclave-mark 1 "foot never mapped"
+    check ipc-context 1 "foot never mapped"
     check toplevel-capture 1 "foot never mapped"
     check activation 1 "foot never mapped"
   fi
