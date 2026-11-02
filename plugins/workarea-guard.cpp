@@ -76,36 +76,9 @@
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/util/log.hpp>
 
-// Vendored from pixdecor (src/deco-subsurface.hpp @ 76a0e89): pixdecor records
-// its drop-shadow thickness as this custom_data_t on the VIEW, under the name
-// below, and expands the view geometry to include the shadow. We read it to
-// strip ONLY the shadow off the frame (see clamp()). The type must match
-// pixdecor's byte-for-byte: same name at global scope, same wf::custom_data_t
-// base, same single decoration_margins_t member, because Wayfire dlopens
-// plugins RTLD_GLOBAL (plugin-loader.cpp: "RTLD_GLOBAL is required for RTTI/
-// dynamic_cast across plugins"), so the typeinfo unifies across the two .so and
-// get_data<>()'s dynamic_cast finds pixdecor's stored object, then reads
-// margins at the matching offset. If pixdecor renames/moves the type or the key
-// the read degrades to null (the shadow gap returns), never a crash: re-sync
-// this vendoring then.
-static const char *const SHADOW_MARGIN_DATA = "wf-decoration-shadow-margin";
-
-class wf_shadow_margin_t : public wf::custom_data_t
-{
-  public:
-    wf::decoration_margins_t get_margins()
-    {
-        return margins;
-    }
-
-    void set_margins(wf::decoration_margins_t margins)
-    {
-        this->margins = margins;
-    }
-
-  private:
-    wf::decoration_margins_t margins = {0, 0, 0, 0};
-};
+// pixdecor's shadow data (the vendored type) lives in pixdecor-shadow.hpp,
+// shared with enclave-mark.
+#include "pixdecor-shadow.hpp"
 
 class wayfire_workarea_guard : public wf::plugin_interface_t
 {
@@ -175,12 +148,7 @@ class wayfire_workarea_guard : public wf::plugin_interface_t
         // read live -> config-less. Absent (undecorated view, or a decorator
         // that does not publish it) -> zero margin -> we bound the frame, which
         // for an undecorated view already IS the content.
-        wf::decoration_margins_t shadow = {0, 0, 0, 0};
-        if (auto sm = view->get_data<wf_shadow_margin_t>(SHADOW_MARGIN_DATA))
-        {
-            shadow = sm->get_margins();
-        }
-        auto s = wf::shrink_geometry_by_margins(g, shadow);
+        auto s = wf::shrink_geometry_by_margins(g, pixdecor_shadow(view));
         if ((s.width <= 0) || (s.height <= 0))
         {
             return;   // degenerate strip (e.g. mid shade-animation): leave it
