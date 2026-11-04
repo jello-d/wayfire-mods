@@ -34,6 +34,12 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   ipc-identifier  the IPC view description carries the window's
+#                   ext-foreign-toplevel-list identifiers, each EQUAL to what
+#                   a client of that list was sent: "toplevel-identifier" to
+#                   a plain client's, security-context's own to the enclave
+#                   client's, the two distinct, and already present in the
+#                   view-mapped event (stock: no such keys)
 #   mark-hugs       an enclave window that pixdecor decorates, with shadows and
 #                   rounded corners on (the user's real setup): the frame sits
 #                   on the VISIBLE edge, not a shadow-width out where the
@@ -558,6 +564,46 @@ check_toplevel_capture() {
   check toplevel-capture "$_ok" "$_detail"
 }
 
+# ident_of <list output> <app-id>: the identifier that list gave the window
+ident_of() {
+  printf '%s\n' "$1" | awk -v a="$2" '$1 == "toplevel" && $2 == a { print $3 }'
+}
+# ipc_ids <view json>: "<toplevel-identifier>|<security-context's>"
+ipc_ids() {
+  printf '%s\n' "$1" | jpy "'%s|%s' % (d.get('toplevel-identifier', ''),
+    d.get('security-context', {}).get('toplevel-identifier', ''))"
+}
+
+# check_ipc_identifier: after check_toplevel_capture, with its ticker (an
+# enclave window) and the personal foot still mapped
+check_ipc_identifier() {
+  _mine=$(capture_as "$S/ctx.sock" list); _all=$(capture_as "$WLD" list)
+  _ti=$(ident_of "$_mine" wfm-tick); _tp=$(ident_of "$_all" wfm-tick)
+  _fp=$(ident_of "$_all" wfm-foot)
+  _t=$(ipc_ids "$(wait_view "v['app-id'] == 'wfm-tick'")")
+  _f=$(ipc_ids "$(wait_view "v['app-id'] == 'wfm-foot'")")
+  python3 -I "$HERE/test/live-ipc" "$SOCK" --watch view-mapped \
+    > "$S/watch.log" 2>&1 &
+  CTX_PIDS="$CTX_PIDS $!"
+  until_true "grep -q watching '$S/watch.log'"
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+    --app-id wfm-idev sleep 600 > "$S/idev.log" 2>&1 &
+  CTX_PIDS="$CTX_PIDS $!"
+  until_true "grep -q '\"event\"' '$S/watch.log'"
+  _ev=$(grep '"event"' "$S/watch.log" | jpy "d['view']['app-id']")
+  _ev="$_ev $(ipc_ids "$(grep '"event"' "$S/watch.log" | jpy \
+    "json.dumps(d['view'])")")"
+  _d="enclave list [$_ti] plain list [$_tp] ipc [$_t];"
+  _d="$_d personal plain [$_fp] ipc [$_f]; mapped event [$_ev]"
+  _ok=0
+  [ -n "$_ti" ] && [ -n "$_tp" ] && [ -n "$_fp" ] || _ok=1
+  [ "$_ti" != "$_tp" ] || _ok=1           # each list mints its own
+  [ "$_t" = "$_tp|$_ti" ] || _ok=1
+  [ "$_f" = "$_fp|" ] || _ok=1             # personal: no instance identifier
+  case $_ev in "wfm-idev "?*"|"?*) ;; *) _ok=1 ;; esac   # both, at map
+  check ipc-identifier "$_ok" "$_d"
+}
+
 # act_display <personal|titan|work>: the socket a client of that side uses
 act_display() {
   case $1 in personal) echo "$WLD" ;; titan) echo "$S/ctx.sock" ;;
@@ -641,12 +687,14 @@ session_main() {
     check_enclave_mark "$_foot"
     check_ipc_context "$_foot"
     check_toplevel_capture
+    check_ipc_identifier
     check_activation
   else
     check pixdecor 1 "foot never mapped"; check filters 1 "foot never mapped"
     check enclave-mark 1 "foot never mapped"
     check ipc-context 1 "foot never mapped"
     check toplevel-capture 1 "foot never mapped"
+    check ipc-identifier 1 "foot never mapped"
     check activation 1 "foot never mapped"
   fi
   client dialog python3 -I "$HERE/test/live-dialog"; DLG_PID=$!

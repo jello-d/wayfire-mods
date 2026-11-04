@@ -2,9 +2,10 @@
  * live-capture: drive window capture the way a screen-sharing portal does,
  * on the compositor named by WAYLAND_DISPLAY. For test/live.t.
  *
- *   live-capture list             one "toplevel <app_id>" line per window in
- *                                 every ext_foreign_toplevel_list_v1 this
- *                                 client is offered, then "lists <n>"
+ *   live-capture list             one "toplevel <app_id> <identifier>" line
+ *                                 per window in every
+ *                                 ext_foreign_toplevel_list_v1 this client is
+ *                                 offered, then "lists <n>"
  *   live-capture capture <app_id> capture that window once over
  *                                 ext-image-copy-capture with an shm buffer;
  *                                 prints "captured <w>x<h> <r> <g> <b>" (the
@@ -58,6 +59,7 @@ static struct ext_image_copy_capture_manager_v1 *copy_mgr;
 static struct {
   struct ext_foreign_toplevel_handle_v1 *handle;
   char app_id[256];
+  char identifier[64];
 } toplevels[MAX_TOPLEVELS];
 static int n_toplevels;
 
@@ -125,7 +127,12 @@ static void h_app_id(void *d, struct ext_foreign_toplevel_handle_v1 *h,
 }
 static void h_identifier(void *d, struct ext_foreign_toplevel_handle_v1 *h,
                          const char *id)
-{ (void)d; (void)h; (void)id; }
+{
+  (void)h;
+  long i = (long)d;
+  snprintf(toplevels[i].identifier, sizeof(toplevels[i].identifier), "%s",
+           id);
+}
 
 static const struct ext_foreign_toplevel_handle_v1_listener handle_listener = {
   h_closed, h_done, h_title, h_app_id, h_identifier,
@@ -215,7 +222,8 @@ static const struct ext_image_copy_capture_frame_v1_listener frame_listener = {
 static int do_list(void)
 {
   for (int i = 0; i < n_toplevels; i++)
-    printf("toplevel %s\n", toplevels[i].app_id);
+    printf("toplevel %s %s\n", toplevels[i].app_id,
+           toplevels[i].identifier);
   printf("lists %d\n", n_lists);
   return 0;
 }

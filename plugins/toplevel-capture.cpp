@@ -34,6 +34,7 @@
 #include <wayfire/view.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/plugins/common/security-context.hpp>
+#include <wayfire/plugins/common/toplevel-identifier.hpp>
 #include <drm_fourcc.h>
 #include <cstring>
 #include <map>
@@ -477,6 +478,18 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
             rec->enclave->data = rec.get();
         }
 
+        // Published for IPC (usher U-W2): the instance identifier is the one
+        // a sandboxed client sees, so both sides can name a window without
+        // its title. Each handle has its own, so both are kept.
+        auto ids = std::make_unique<wf::toplevel_identifier::identifiers_t>();
+        ids->personal = rec->personal->identifier;
+        if (rec->enclave)
+        {
+            ids->instance = rec->enclave->identifier;
+        }
+
+        toplevel->store_data(std::move(ids),
+            wf::toplevel_identifier::DATA_NAME);
         toplevel->store_data(std::move(rec), RECORD_DATA);
     }
 
@@ -492,6 +505,7 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
+        ev->view->erase_data(wf::toplevel_identifier::DATA_NAME);
         ev->view->erase_data(RECORD_DATA);
     };
     wf::signal::connection_t<wf::view_title_changed_signal> on_title =

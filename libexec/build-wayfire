@@ -184,7 +184,7 @@ say "wayfire $WAYFIRE_REF (+ our patches)"
 WAYFIRE_PATCHES="wayfire-ipc-guard-dialog-output wayfire-startup-image
   wayfire-scale-clamp wayfire-security-context-allowlist
   wayfire-xdg-activation-sandbox wayfire-diag-focus-surface
-  wayfire-ipc-security-context"
+  wayfire-ipc-security-context wayfire-ipc-toplevel-identifier"
 _w=$(pin "$WAYFIRE_REF" "$WLROOTS_REF" \
   "$(for _p in $WAYFIRE_PATCHES; do cat "$PATCHES/$_p.patch"; done)")
 # Everything below builds AGAINST this wayfire, and our patches can change
