@@ -54,6 +54,7 @@ class wsync_t : public wf::per_output_plugin_instance_t {
 
   void init() override {
     output->connect(&on_ws_changed);
+    adopt();
 
     LOGI("WSYNC init: BUILD=", __DATE__, " ", __TIME__,
          " output=",  output->handle->name,
@@ -96,6 +97,32 @@ class wsync_t : public wf::per_output_plugin_instance_t {
     }
 
     g_syncing = false;
+  }
+
+  // A NEW output joins the array where it already is. Wayfire gives an output
+  // that arrives (a monitor plugged in or woken, one switched back on) a
+  // fresh wset at (0,0), and no workspace_changed fires for that, so without
+  // this it sits on (0,0) while the rest stay put, until the next switch.
+  // The first OTHER output is the reference: they are all in sync already.
+  void adopt() {
+    if (!(bool)enabled) return;
+    auto mine = output->wset();
+    if (!mine) return;
+    for (auto wo : wf::get_core().output_layout->get_outputs()) {
+      if (wo == output || !wo->wset()) continue;
+      const auto grid = mine->get_workspace_grid_size();
+      const auto ref = wo->wset()->get_current_workspace();
+      const wf::point_t t{clampi(ref.x, 0, grid.width - 1),
+                          clampi(ref.y, 0, grid.height - 1)};
+      const auto cur = mine->get_current_workspace();
+      if (cur.x == t.x && cur.y == t.y) return;
+      if ((bool)debug_log)
+        LOGI("WSYNC: ", output->handle->name, " joins at ", t.x, ",", t.y);
+      g_syncing = true;
+      mine->request_workspace(t);
+      g_syncing = false;
+      return;
+    }
   }
 
   // A workspace changed on THIS output. Mirror it to the rest, unless sync is
