@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="surface-names">
+        <_short>Surface Names</_short>
+        <_long>Name the parts of each output on a workspace change, and on a
+        toggle. Replaces workspace-names: any number of labels per output per
+        workspace, each centred in its own rectangle (fractions of the
+        output), so a split panel shows a label in each part.</_long>
+        <category>Utility</category>
+
+        <option name="toggle" type="activator">
+            <_short>Toggle</_short>
+            <_long>Show every output's labels and keep them, following
+            workspace changes, until pressed again. Also an IPC method of the
+            same name.</_long>
+            <default>&lt;super&gt; KEY_I</default>
+        </option>
+        <option name="display_duration" type="int">
+            <_short>Display Duration</_short>
+            <_long>How long the labels show on a workspace change (ms).</_long>
+            <default>500</default>
+            <min>1</min>
+        </option>
+        <option name="position" type="string">
+            <_short>Position</_short>
+            <_long>Where a label sits within ITS rectangle.</_long>
+            <default>center</default>
+            <desc><value>top_left</value><_name>Top Left</_name></desc>
+            <desc><value>top_center</value><_name>Top Center</_name></desc>
+            <desc><value>top_right</value><_name>Top Right</_name></desc>
+            <desc><value>center_left</value><_name>Center Left</_name></desc>
+            <desc><value>center</value><_name>Center</_name></desc>
+            <desc><value>center_right</value><_name>Center Right</_name></desc>
+            <desc><value>bottom_left</value><_name>Bottom Left</_name></desc>
+            <desc><value>bottom_center</value><_name>Bottom Center</_name></desc>
+            <desc><value>bottom_right</value><_name>Bottom Right</_name></desc>
+        </option>
+        <option name="margin" type="int">
+            <_short>Margin</_short>
+            <_long>Distance from the rectangle's edge for an edge position.</_long>
+            <default>0</default>
+            <min>0</min>
+        </option>
+        <option name="background_color" type="color">
+            <_short>Background Color</_short>
+            <_long>Background color for text.</_long>
+            <default>0.2 0.2 0.2 0.7</default>
+        </option>
+        <option name="text_color" type="color">
+            <_short>Text Color</_short>
+            <_long>Text color.</_long>
+            <default>1 1 1 1</default>
+        </option>
+        <option name="font" type="string">
+            <_short>Text Font</_short>
+            <_long>Font used for text rendering.</_long>
+            <default>sans-serif</default>
+        </option>
+        <option name="background_radius" type="double">
+            <_short>Background Corner Radius</_short>
+            <_long>Radius for the corners of the background.</_long>
+            <default>30</default>
+            <min>0</min>
+        </option>
+        <option name="show_unlabelled" type="bool">
+            <_short>Show Unlabelled Workspaces</_short>
+            <_long>A workspace with no label on an output shows "Workspace N"
+            over the whole output, as workspace-names did.</_long>
+            <default>true</default>
+        </option>
+        <option name="labels" type="dynamic-list" type-hint="dict">
+            <_short>Labels</_short>
+            <_long>Keyed OUTPUT_workspace_N_K (N row-major from 1, K distinct
+            per workspace), each `FX FY FW FH TEXT`: the rectangle as fractions
+            of the output, then the text.</_long>
+            <entry prefix="" type="string">
+                <_short>Label</_short>
+                <_long>FX FY FW FH TEXT</_long>
+            </entry>
+        </option>
+    </plugin>
+</wayfire>
