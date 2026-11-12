@@ -11,6 +11,13 @@
 // on the rightmost, and top+bottom only on the middle, with no output names
 // anywhere; it falls out of the geometry and adapts to any arrangement.
 //
+// AN EDGE WITH ANY NEIGHBOUR IS WHOLLY INTERIOR, including the part of it
+// with nothing beyond (a jagged edge between outputs of different sizes).
+// edge-warp RELIES on that: it owns exactly those parts, so the two never act
+// on one push and need no coordination. Flipping on a partly shared edge's
+// open part would make both act; test/live.t's edge-warp-off check fails if
+// this plugin ever does.
+//
 // Flips affect only THIS output. Crossing an exterior edge flips the firing
 // output's own workspace set; cross-output coordination (moving the other
 // panels in lockstep) is owned by the separate wsync plugin, which mirrors any
