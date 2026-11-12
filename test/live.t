@@ -50,6 +50,19 @@
 #                   skip line): a window captures into a dmabuf of a format
 #                   and modifier the session offered, AND into shm, both
 #                   with the window's real pixels (stock: no such plugin)
+#   edge-flip-armed (see edge-warp-off)
+#   edge-warp       pushed across the part of an edge with nothing beyond
+#                   it, the pointer lands on the neighbouring output (stock
+#                   has no such plugin; it stops dead)
+#   edge-warp-off   switched OFF live over IPC, that part is a wall again,
+#                   AND edge-flipping does not flip there: an edge any output
+#                   touches is interior to it, which is the one thing the two
+#                   plugins' independence rests on. ARMED first: a push into
+#                   a truly exterior edge must flip, or "no flip" proves
+#                   nothing (pointer flipping defaults OFF, and the first
+#                   version of this check passed against a planted
+#                   edge-flipping for exactly that reason)
+#   edge-warp-prop  proportional, set live, lands at the same fraction along
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -785,10 +798,69 @@ session_gpu() {
   _live_stop
 }
 
+# Session 5: edge-warp. HEADLESS-2 at scale 2 is 640x360 logical beside
+# HEADLESS-1's 1280x720, so HEADLESS-1's right edge has nothing beyond it
+# below y=360. stipc feeds RELATIVE motion, which goes through wlroots'
+# clamping exactly as a mouse does. edge-flipping is loaded too, with pointer
+# flips ON (its default is off) and no approach detection, so any sample at
+# an outer edge flips: the independence check needs a flipper that WOULD.
+# A 9x9 wrapping grid, because on a 3-wide one three flips land back where
+# they started and read as none (which is how the first draft passed a
+# planted regression).
+session_warp() {
+  printf '%s\n' '[core]' \
+    'plugins = ipc ipc-rules stipc edge-warp edge-flipping' \
+    'xwayland = false' 'vwidth = 9' 'vheight = 9' '' \
+    '[edge-flipping]' 'approach_zone_px = 0' 'max_approach_ms = 1000' \
+    'enable_pointer_flip = true' 'wrap = true' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' 'position = 0,0' '' \
+    '[output:HEADLESS-2]' 'mode = 1280x720@60000' 'position = 1280,0' \
+    'scale = 2' > "$T/warp.ini"
+  start_wayfire "$T/s5" "$T/warp.ini" 2
+  # Spaced past edge-flipping's 100ms tick: it samples the pointer on that
+  # tick, so moves arriving faster are never judged at the edge at all.
+  _wm() { ipc stipc/move_cursor "{\"x\": $1, \"y\": $2}" > /dev/null
+    sleep 0.15; }
+  _wc() { ipc window-rules/get_cursor_position \
+    | jpy "'%d %d' % (int(d.get('pos', d)['x']), int(d.get('pos', d)['y']))"; }
+  _ws() { ipc window-rules/list-outputs \
+    | jpy "' '.join('%d,%d' % (o['workspace']['x'], o['workspace']['y'])
+           for o in d)"; }
+  _set() { ipc wayfire/set-config-options "{\"edge-warp/$1\": \"$2\"}" \
+    > /dev/null; }
+  _wa=$(_ws); _wm 640 400; _wm 0 400; _wm 640 400; _wb=$(_ws)
+  [ "$_wa" != "$_wb" ]
+  check edge-flip-armed $? "one sample at HEADLESS-1's outer left edge flips:
+    workspaces $_wa -> $_wb"
+  # The landing is INSET 16 from HEADLESS-2's last row, which is its outer
+  # edge: a further sample there (the nudge) must flip nothing. Landing ON
+  # that row did, in the first version of the plugin.
+  _w0=$(_ws)
+  _wm 640 400; _wm 1279 600; _wm 1300 600; _at=$(_wc); _wm 1301 343
+  _w1=$(_ws)
+  [ "$_at" = "1300 343" ] && [ "$_w1" = "$_w0" ]
+  check edge-warp $? "pushed 21px right at y=600 (nothing beyond): at $_at,
+    want 1300 343 on HEADLESS-2, 16 in from its edge; workspaces $_w1 (want
+    $_w0, the landing flips nothing)"
+  _set enabled false
+  _wm 640 400; _wm 1279 600; _wm 1300 600; _wm 1300 600; _at=$(_wc)
+  _w2=$(_ws)
+  [ "$_at" = "1279 600" ] && [ "$_w2" = "$_w0" ]
+  check edge-warp-off $? "switched off: at $_at (want 1279 600, a wall);
+    workspaces $_w2 (want $_w0, no flip)"
+  _set enabled true; _set proportional true
+  _wm 640 400; _wm 1279 600; _wm 1300 600; _at=$(_wc)
+  [ "$_at" = "1300 300" ]
+  check edge-warp-prop $? "proportional: at $_at, want 1300 300 (600/720)"
+  alive || died edge-warp
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
 session_hug
 session_gpu
+session_warp
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

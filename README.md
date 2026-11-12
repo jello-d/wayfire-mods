@@ -21,8 +21,9 @@ rather than by rebasing a divergent tree.
   security-context-allowlist), filters (frame-margins), and pixdecor
   (titlebar-padding). wlroots, wcm, plugins-extra, and wf-info are clean
   upstream (no patch).
-- `plugins/`: the custom Wayfire plugins (edge-flipping, workspace-wallpaper,
-  wsync, directional-focus, atlas, ...), a self-contained meson project.
+- `plugins/`: the custom Wayfire plugins (edge-flipping, edge-warp,
+  workspace-wallpaper, wsync, directional-focus, atlas, ...), a
+  self-contained meson project.
 - `libexec/build-wayfire`: the whole build recipe (fetch, patch, build in
   dependency order, rpath, incremental stamps).
 

@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<wayfire>
+    <plugin name="edge-warp">
+        <_short>Edge Warp</_short>
+        <_long>Carry the pointer across a jagged edge between outputs of
+        different sizes, onto the neighbouring output, instead of stopping it
+        where nothing is beyond the edge. Acts only on an edge some output
+        touches; the outer boundary of the layout is left alone.</_long>
+        <category>Navigation</category>
+
+        <option name="enabled" type="bool">
+            <_short>Enabled</_short>
+            <_long>Carry the pointer across jagged edges. Off, the part of
+            an edge with nothing beyond it is a wall. An option rather than
+            the plugin's presence, so it can change live.</_long>
+            <default>true</default>
+        </option>
+
+        <option name="proportional" type="bool">
+            <_short>Proportional</_short>
+            <_long>Map the whole edge onto the whole neighbouring edge, so the
+            same fraction along lands at the same fraction on the neighbour.
+            This moves the pointer on the part of the edge that already lines
+            up, too. Only where exactly one output is on that side; otherwise
+            the straight warp applies. Off: straight across, slid to the
+            nearest point of the neighbour.</_long>
+            <default>false</default>
+        </option>
+
+        <option name="inset_px" type="int">
+            <_short>Landing inset (pixels)</_short>
+            <_long>Where the nearest point of the neighbour is its end, land
+            this far inside it instead (at most half its length). The end is
+            the neighbour's outer edge, where edge flips, hot corners and an
+            auto-hiding bar trigger; a sideways push should not land on it.
+            0 lands on the very edge.</_long>
+            <default>16</default>
+            <min>0</min>
+            <max>200</max>
+        </option>
+    </plugin>
+</wayfire>
