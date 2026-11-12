@@ -353,11 +353,21 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
     return {x1, y1, x2 - x1, y2 - y1};
   }
 
+  // Take every node OUT OF THE SCENE, not just out of our vector: the scene
+  // holds its own reference, and each node points at a texture of ours, so a
+  // node left behind draws from freed memory once that texture goes.
+  void remove_nodes() {
+    for (auto& col : nodes)
+      for (auto& n : col)
+        if (n) wf::scene::remove_child(n);
+    nodes.clear();
+  }
+
   void rebuild_nodes() {
     grid_size = output->wset()->get_workspace_grid_size();
     og = output->get_relative_geometry();
 
-    nodes.clear();
+    remove_nodes();
     nodes.resize(grid_size.width);
     for (int x = 0; x < grid_size.width; x++) nodes[x].resize(grid_size.height);
 
@@ -507,6 +517,37 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
     output->render->damage_whole();
   }
 
+  // THE GRID CAN CHANGE UNDER A RUNNING SESSION: the integrator sets it per
+  // desk (2x2 docked, 3x3 on the laptop alone), live, over IPC. Everything
+  // here is sized to the grid (a node and a texture per workspace), so a
+  // change rebuilds the lot; read once at init, a 2x2 -> 3x3 left the new
+  // workspaces with no wallpaper at all.
+  void regrid() {
+    remove_nodes();
+    for (auto& col : textures)
+      for (auto& t : col) t.destroy();
+    grid_size = output->wset()->get_workspace_grid_size();
+    textures.clear();
+    textures.resize(grid_size.width);
+    for (int x = 0; x < grid_size.width; x++)
+      textures[x].resize(grid_size.height);
+    rebuild_nodes();
+    load_all_textures();
+    recompute_all();
+  }
+
+  wf::signal::connection_t<wf::workspace_grid_changed_signal> grid_changed =
+      [=](wf::workspace_grid_changed_signal *) { regrid(); };
+
+  // A redock hands this output another wset (preserve-output), whose grid
+  // and grid signal are its own: follow it.
+  wf::signal::connection_t<wf::workspace_set_changed_signal> wset_changed =
+      [=](wf::workspace_set_changed_signal *) {
+        grid_changed.disconnect();
+        output->wset()->connect(&grid_changed);
+        regrid();
+      };
+
   wf::signal::connection_t<wf::workspace_changed_signal> viewport_changed =
       [=](wf::workspace_changed_signal *ev) {
         apply_viewport(ev->new_viewport);
@@ -559,6 +600,8 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
 
     output->connect(&viewport_changed);
     output->connect(&output_config_changed);
+    output->connect(&wset_changed);
+    output->wset()->connect(&grid_changed);
     wf::get_core().output_layout->connect(&layout_changed);
 
     directory.set_callback(cfg_changed);
@@ -580,8 +623,11 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
   }
 
   void fini() override {
-    for (int x = 0; x < grid_size.width; x++)
-      for (int y = 0; y < grid_size.height; y++) textures[x][y].destroy();
+    grid_changed.disconnect();
+    wset_changed.disconnect();
+    remove_nodes();   // before the textures they point at go
+    for (auto& col : textures)
+      for (auto& t : col) t.destroy();
 
     if (black_tex != (GLuint)-1) {
       GLuint t = black_tex;
@@ -589,8 +635,6 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
       black_tex = (GLuint)-1;
     }
 
-    // Nodes are shared_ptrs attached to the scene; clearing our refs is enough.
-    nodes.clear();
     output->render->damage_whole();
   }
 };
