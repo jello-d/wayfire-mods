@@ -63,6 +63,16 @@
 #                   version of this check passed against a planted
 #                   edge-flipping for exactly that reason)
 #   edge-warp-prop  proportional, set live, lands at the same fraction along
+#   backoff-alive   an output whose every frame fails its test (a shim
+#                   preloaded into this run, test/live-failtest.c, as when a
+#                   dock's connector vanishes) under a window that keeps
+#                   redrawing AND a running animation: IPC still answers
+#                   (stock livelocks, repainting from an idle callback
+#                   forever, so it never polls again)
+#   backoff-rate    failures stay near one per 16ms, and are NOT zero (zero
+#                   would mean the shim failed nothing and proved nothing)
+#   backoff-recover once the output's tests pass again its frames commit:
+#                   the failures stop and a screenshot of it succeeds
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -215,11 +225,24 @@ build_activate() {
     || fail "could not build the activation test client"
 }
 
+# build_failtest: test/live-failtest.c as a preload, against the wlroots
+# headers of the prefix under test (it reads struct wlr_output's name)
+build_failtest() {
+  _a=$(cc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -shared -fPIC -DWLR_USE_UNSTABLE -o "$T/failtest.so" \
+    "$HERE/test/live-failtest.c" \
+    $(PKG_CONFIG_PATH="$P/lib/$_a/pkgconfig" pkg-config --cflags \
+      wlroots-0.20) -ldl \
+    || fail "could not build the failtest preload"
+}
+
 write_fixtures() {
   mkdir -m 0700 "$T/data"
   build_secctx
   build_capture
   build_activate
+  build_failtest
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
   python3 -I -c 'import sys; sys.stdout.buffer.write(
     b"P6\n64 64\n255\n" + b"\xff\x00\x00" * 4096)' > "$T/start.ppm"
@@ -258,7 +281,10 @@ write_ini() {
 start_wayfire() {   # <session dir> <ini> <output count>
   S=$1; SOCK=$S/ipc.sock; RUN=$S/run
   mkdir -p "$S"; mkdir -m 0700 "$RUN"
-  env -u WAYLAND_DISPLAY -u DISPLAY -u WAYFIRE_SOCKET \
+  # WF_ENV: extra VAR=value words for this compositor ONLY (e.g. a
+  # preload); env parses them, none hold spaces.
+  # shellcheck disable=SC2086  # WF_ENV is a word list
+  env -u WAYLAND_DISPLAY -u DISPLAY -u WAYFIRE_SOCKET ${WF_ENV:-} \
     XDG_RUNTIME_DIR="$RUN" XDG_DATA_HOME="$T/data" WLR_BACKENDS=headless \
     WLR_HEADLESS_OUTPUTS="$3" WLR_LIBINPUT_NO_DEVICES=1 \
     _WAYFIRE_SOCKET="$SOCK" WAYFIRE_STARTUP_IMAGE="$T/start.ppm" \
@@ -856,11 +882,70 @@ session_warp() {
   _live_stop
 }
 
+# Session 6: output-commit-backoff. HEADLESS-1's every frame fails its test
+# while $T/fail exists, as an undocked monitor's does before its hotplug is
+# read, and a foot printing every 50ms keeps damaging it. The shim counts
+# each failure into $T/fail.count. animate's startup fade runs throughout:
+# its pre-render hook asks for a repaint INSIDE every paint, the shape any
+# running animation has, so the retry timer alone would not break the loop
+# (a build without paint()'s early return livelocks here; proven). The
+# trigger is removed BEFORE teardown: a
+# livelocked compositor cannot even handle SIGTERM (its signals come through
+# the same starved event loop), and with the cause gone stock recovers too.
+session_backoff() {
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules animate' \
+    'xwayland = false' '' '[animate]' 'startup_duration = 120000ms linear' \
+    '' '[output:HEADLESS-1]' 'mode = 1280x720@60000' > "$T/backoff.ini"
+  WF_ENV="LD_PRELOAD=$T/failtest.so WFM_FAILTEST=$T/fail"
+  WF_ENV="$WF_ENV WFM_FAILTEST_OUTPUT=HEADLESS-1"
+  start_wayfire "$T/s6" "$T/backoff.ini" 1
+  WF_ENV=
+  client tick foot -c "$T/foot.ini" --app-id wfm-tick \
+    sh -c 'while :; do date +%s.%N; sleep 0.05; done'
+  FOOT_PID=$!
+  wait_view "v['app-id'] == 'wfm-tick'" > /dev/null \
+    || { check backoff-alive 1 "the redrawing window never mapped"
+         _live_stop; return; }
+  _n() { wc -c < "$T/fail.count" 2>/dev/null || echo 0; }
+  _q() { timeout 3 python3 -I "$HERE/test/live-ipc" "$SOCK" "$1" \
+    > /dev/null 2>&1; }
+  : > "$T/fail"; sleep 0.5
+  _c0=$(_n); _t0=$(date +%s%N)
+  _ok=0
+  for _m in window-rules/list-outputs window-rules/list-views \
+            window-rules/list-outputs; do
+    _q "$_m" || _ok=1
+  done
+  sleep 1
+  _c1=$(_n); _t1=$(date +%s%N)
+  check backoff-alive "$_ok" "IPC answered 3 calls while HEADLESS-1 failed
+    every frame (stock: timeouts, it never polls again)"
+  _ms=$(( (_t1 - _t0) / 1000000 )); _f=$((_c1 - _c0))
+  _ok=1
+  [ "$_f" -gt 0 ] && [ "$_f" -le $(( _ms * 3 / 32 + 5 )) ] && _ok=0
+  check backoff-rate "$_ok" "$_f failures in ${_ms}ms (want 1 to ~1 per 16ms;
+    stock: thousands)"
+  rm -f "$T/fail"; sleep 1
+  _c2=$(_n); sleep 1; _c3=$(_n)
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN timeout 5 \
+    grim -o HEADLESS-1 "$S/shot.png" > "$S/grim.log" 2>&1
+  _g=$?
+  _ok=1
+  [ "$_c3" = "$_c2" ] && [ "$_g" = 0 ] && _ok=0
+  check backoff-recover "$_ok" "trigger removed: failures $_c2 -> $_c3 a second
+    later (want no change), grim rc $_g (want 0)"
+  alive || died backoff-alive
+  _bp=$WF_PID
+  _live_stop
+  sleep 0.5; kill -KILL "$_bp" 2>/dev/null || :
+}
+
 write_fixtures
 session_scale
 session_main
 session_hug
 session_gpu
 session_warp
+session_backoff
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

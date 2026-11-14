@@ -1,0 +1,53 @@
+diff --git a/src/output/render-manager.cpp b/src/output/render-manager.cpp
+index 830a5d37..41025400 100644
+--- a/src/output/render-manager.cpp
++++ b/src/output/render-manager.cpp
+@@ -746,6 +746,12 @@ class wf::render_manager::impl
+     wf::wl_listener_wrapper on_frame, on_present, on_output_commit, on_renderer_destroy;
+     wf::wl_high_resolution_timer repaint_timer;
+     wf::wl_timer<false> vrr_idle_timer;
++    // wayfire-mods (output-commit-backoff): armed by a failed commit in
++    // paint(); while armed, paint() draws nothing. See paint().
++    wf::wl_timer<false> commit_backoff;
++    // One frame at 60Hz: a transient failure costs a frame, a lasting one a
++    // retry per frame instead of one per pass through the idle list.
++    static constexpr uint32_t COMMIT_RETRY_MS = 16;
+ 
+     output_t *output;
+     wf::region_t swap_damage;
+@@ -1446,6 +1452,13 @@ class wf::render_manager::impl
+      */
+     void paint(const repaint_schedule_t& schedule)
+     {
++        // wayfire-mods (output-commit-backoff): a commit failed and its retry
++        // is on a timer. Any frame before then would only fail the same way.
++        if (commit_backoff.is_connected())
++        {
++            return;
++        }
++
+         const int64_t paint_started_ns = get_monotonic_time_ns();
+         /* Part 1: frame setup: query damage, etc. */
+         effects->run_effects(OUTPUT_EFFECT_PRE);
+@@ -1542,7 +1555,20 @@ class wf::render_manager::impl
+         swap_damage.clear();
+         if (!committed)
+         {
+-            damage_manager->damage_whole();
++            // wayfire-mods (output-commit-backoff): stock called damage_whole(),
++            // which repaints at once from an idle callback, and libwayland runs
++            // idle callbacks until none are left. So a commit that kept failing
++            // (an output whose connector is gone before its hotplug is read,
++            // e.g. a dock unplugged) never let the event loop poll again: it
++            // livelocked, and starved the very hotplug that would have ended
++            // it. Keep the damage, and retry from a timer, which the event
++            // loop only runs after polling.
++            damage_manager->damage_buffer(damage_manager->get_buffer_extents(),
++                false);
++            commit_backoff.set_timeout(COMMIT_RETRY_MS, [this] ()
++            {
++                damage_manager->schedule_repaint();
++            });
+             return;
+         }
+ 

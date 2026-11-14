@@ -18,7 +18,8 @@ rather than by rebasing a divergent tree.
   and pinned together here; every satellite links that ABI, so a wlroots or
   Wayfire bump rebuilds them all.
 - `patches/`: patches for Wayfire (ipc-guard, startup-image, scale-clamp,
-  security-context-allowlist), filters (frame-margins), and pixdecor
+  security-context-allowlist, output-commit-backoff), filters
+  (frame-margins), and pixdecor
   (titlebar-padding). wlroots, wcm, plugins-extra, and wf-info are clean
   upstream (no patch).
 - `plugins/`: the custom Wayfire plugins (edge-flipping, edge-warp,
