@@ -73,6 +73,13 @@
 #                   would mean the shim failed nothing and proved nothing)
 #   backoff-recover once the output's tests pass again its frames commit:
 #                   the failures stop and a screenshot of it succeeds
+#   unplug-removed  the undock itself, nested: WL-2 of a wayfire running
+#                   inside another fails every frame, then its window is
+#                   closed from outside, which is wlroots' backend removing
+#                   the output exactly as a hotplug does. With the fault
+#                   STILL on, the nested wayfire drops WL-2 (stock never
+#                   reads the removal: the same livelock, IPC dead)
+#   unplug-quiet    and the failures stop, because the output is gone
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -940,6 +947,68 @@ session_backoff() {
   sleep 0.5; kill -KILL "$_bp" 2>/dev/null || :
 }
 
+# Session 7: the unplug, nested. A wayfire on the wayland backend inside a
+# headless one: its outputs WL-1 and WL-2 are windows of the parent, and
+# closing one makes wlroots destroy that output, the backend-side removal a
+# hotplug is (so this checks the event that ENDS the real undock gets read,
+# where backoff only took the fault away). The shim fails WL-2's every frame
+# and stays on through the close; animate's fade damages every output
+# without a client. Pixman, so the nested renderer needs nothing of the
+# parent but shm.
+session_unplug() {
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules' 'xwayland = false' '' \
+    '[output:HEADLESS-1]' 'mode = 2560x1440@60000' > "$T/parent.ini"
+  start_wayfire "$T/s7" "$T/parent.ini" 1
+  _psock=$SOCK
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules animate' \
+    'xwayland = false' '' '[animate]' 'startup_duration = 120000ms linear' \
+    > "$T/nested.ini"
+  _nsock=$S/nested.sock
+  env -u DISPLAY -u WAYFIRE_SOCKET XDG_RUNTIME_DIR="$RUN" \
+    WAYLAND_DISPLAY="$WLD" WLR_BACKENDS=wayland WLR_WL_OUTPUTS=2 \
+    WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 _WAYFIRE_SOCKET="$_nsock" \
+    LD_PRELOAD="$T/failtest.so" WFM_FAILTEST="$T/unplug" \
+    WFM_FAILTEST_OUTPUT=WL-2 XDG_DATA_HOME="$T/data" \
+    "$P/bin/wayfire" -c "$T/nested.ini" > "$S/nested.log" 2>&1 &
+  _np=$!
+  _q() { timeout 3 python3 -I "$HERE/test/live-ipc" "$1" "$2" ${3:+"$3"} \
+    2>/dev/null; }
+  _outs() { _q "$_nsock" window-rules/list-outputs \
+    | jpy "' '.join(o['name'] for o in d)"; }
+  _n() { wc -c < "$T/unplug.count" 2>/dev/null || echo 0; }
+  _i=0; _o=
+  until [ "$_o" = "WL-1 WL-2" ]; do
+    _i=$((_i + 1)); _o=$(_outs 2>/dev/null)
+    [ "$_i" -lt 50 ] || break
+    sleep 0.2
+  done
+  [ "$_o" = "WL-1 WL-2" ] || { check unplug-removed 1 "the nested wayfire
+    never came up with WL-1 and WL-2 (got '$_o')"
+    kill -KILL "$_np" 2>/dev/null; _live_stop; return; }
+  : > "$T/unplug"; sleep 1
+  _c0=$(_n)
+  _vid=$(_q "$_psock" window-rules/list-views | jpy "next(v['id'] for v in d
+    if (v.get('title') or '').endswith('WL-2'))")
+  _q "$_psock" window-rules/close-view "{\"id\": $_vid}" > /dev/null
+  _i=0; _o=
+  until [ "$_o" = WL-1 ] || [ "$_i" -ge 15 ]; do
+    _i=$((_i + 1)); sleep 0.2; _o=$(_outs 2>/dev/null)
+  done
+  _ok=1
+  [ "$_c0" -gt 0 ] && [ "$_o" = WL-1 ] && _ok=0
+  check unplug-removed "$_ok" "WL-2 failing ($_c0 failures before the
+    close), its window closed with the fault still on: nested outputs now
+    '$_o' (want WL-1; stock never reads the removal)"
+  _c1=$(_n); sleep 1; _c2=$(_n)
+  [ "$_c1" = "$_c2" ]
+  check unplug-quiet $? "failures $_c1 -> $_c2 a second later (want none:
+    the failing output is gone)"
+  rm -f "$T/unplug"; sleep 0.5
+  kill "$_np" 2>/dev/null; _bp=$WF_PID
+  _live_stop
+  sleep 0.5; kill -KILL "$_np" "$_bp" 2>/dev/null || :
+}
+
 write_fixtures
 session_scale
 session_main
@@ -947,5 +1016,6 @@ session_hug
 session_gpu
 session_warp
 session_backoff
+session_unplug
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

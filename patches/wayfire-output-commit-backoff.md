@@ -53,12 +53,21 @@ All three recover once the trigger is removed (backoff-recover), which is
 what shows the shim, and not something else, causes the hang. The other
 17 checks pass on the patched build, the real-GPU capture included.
 
+Session `unplug` is the undock itself, nested: a wayfire on the wayland
+backend inside a headless one, its WL-2 failing every frame, then WL-2's
+window closed from the parent, which is wlroots' backend destroying the
+output the way a hotplug does. With the fault STILL on, patched drops WL-2
+and its failures stop (22/22, three runs in a row); stock never reads the
+removal, IPC dead, ~3000 failures a second. That is the half backoff could
+not show: the event that ENDS the real undock gets read.
+
 ## Remove when
 
 Upstream wayfire stops repainting from an idle callback after a failed
 commit (`paint()`'s `if (!committed)` branch in
 `src/output/render-manager.cpp`). Drop it from `WAYFIRE_PATCHES` in
 `libexec/build-wayfire`, delete this pair and `test/live-failtest.c`,
-remove `session_backoff` (its call, the `backoff-*` header rows and
-`build_failtest`) from `test/live.t`, and its name from README.md's patch
+remove `session_backoff` and `session_unplug` (their calls, the
+`backoff-*` and `unplug-*` header rows, and `build_failtest`) from
+`test/live.t`, and its name from README.md's patch
 list. `git grep output-commit-backoff` then finds nothing.
