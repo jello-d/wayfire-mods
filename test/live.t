@@ -38,7 +38,8 @@
 #                   pipewire: through the SANDBOX socket it starts, offers
 #                   windows only (AvailableSourceTypes 2), shows its chooser
 #                   exactly the sandbox's own windows and no monitor, starts
-#                   a stream of one, and refuses a monitor-only request;
+#                   a stream of one that a browser-shaped consumer READS
+#                   frames from, and refuses a monitor-only request;
 #                   through the plain socket it offers both (3). Stock exits
 #                   on the sandbox socket ("supports neither"). Skipped with
 #                   a loud line when pipewire, dbus-run-session or the
@@ -257,10 +258,22 @@ build_failtest() {
     || fail "could not build the failtest preload"
 }
 
+# build_pwconsume: the browser-shaped PipeWire consumer xdpw-window-only
+# reads a started stream with; absent (that check skipped, loudly) without
+# libpipewire's headers
+build_pwconsume() {
+  pkg-config --exists libpipewire-0.3 || return 0
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -o "$T/pwconsume" "$HERE/test/live-pwconsume.c" \
+    $(pkg-config --cflags --libs libpipewire-0.3) \
+    || fail "could not build the pipewire consumer"
+}
+
 write_fixtures() {
   mkdir -m 0700 "$T/data"
   build_secctx
   build_capture
+  build_pwconsume
   build_activate
   build_failtest
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
@@ -632,6 +645,7 @@ check_xdpw() {
     command -v "$_c" > /dev/null 2>&1 || _why="needs $_c"
   done
   [ -x "$XDPW" ] || _why="no backend at $XDPW"
+  [ -x "$T/pwconsume" ] || _why="no pipewire consumer (libpipewire-0.3-dev)"
   if [ -n "$_why" ]; then
     printf '  skip xdpw-window-only: %s\n' "$_why"; return
   fi
@@ -645,7 +659,8 @@ check_xdpw() {
     mkdir -p "$2"
     XDG_RUNTIME_DIR=$RUN timeout 60 dbus-run-session \
       --config-file="$HERE/test/live-xdpw-bus.conf" -- \
-      sh "$HERE/test/live-xdpw" "$XDPW" "$1" "$2" 2> "$2/err" | tr '\n' ' '
+      sh "$HERE/test/live-xdpw" "$XDPW" "$1" "$2" "$T/pwconsume" \
+      2> "$2/err" | tr '\n' ' '
   }
   _sb=$(_x "$S/ctx.sock" "$S/xdpw-sandbox")
   _pl=$(_x "$RUN/$WLD" "$S/xdpw-plain")
@@ -665,10 +680,13 @@ check_xdpw() {
   [ "$_mon" = 0 ] || _ok=1                # never a monitor
   has "$_sb" "started 0 " || _ok=1        # Start created a stream
   has "$_sb" "streams 1 " || _ok=1
+  # and something can READ it: Start succeeding is not a share working
+  case $_sb in *"consumed "[1-9]*) ;; *) _ok=1 ;; esac
   has "$_sb" "monitor 0 " && _ok=1        # a monitor-only Start is refused
   has "$_sb" "monitor " || _ok=1
   has "$_sb" "alive yes" || _ok=1         # and it survived all of it
   has "$_pl" "types 3 " || _ok=1          # the plain client keeps both
+  case $_pl in *"consumed "[1-9]*) ;; *) _ok=1 ;; esac
   check xdpw-window-only "$_ok" "sandbox [$_sb] offered [$_got] own [$_own]\
  monitors $_mon; plain [$_pl]"
 }

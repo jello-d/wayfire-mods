@@ -268,16 +268,24 @@ say "xdg-desktop-portal-wlr $XDPW_VERSION (+ our patch)"
 # lookups and not others. The distro package supplies those; its unit is
 # pointed at this binary by the drop-in setup.sh install writes.
 XDPW_BIN=$PREFIX/libexec/xdg-desktop-portal-wlr
-_w=$(pin "$XDPW_REF" "$(cat "$PATCHES/xdpw-window-only.patch")")
+# In apply order: two UPSTREAM fixes made after 0.8.1 (each file names its
+# commit), then ours. 896cee8 is what makes a WINDOW share work at all on
+# pipewire 1.6: 0.8.1 offers it at framerate 0 and every consumer's link is
+# refused ("no more output formats"; an enclave's Meet, 2026-11-15).
+XDPW_PATCHES="xdpw-upstream-896cee8 xdpw-upstream-2e67398 xdpw-window-only"
+_w=$(pin "$XDPW_REF" \
+  "$(for _p in $XDPW_PATCHES; do cat "$PATCHES/$_p.patch"; done)")
 if in_sync xdpw "$_w" "$XDPW_BIN"; then
   echo "  xdpw in sync ($XDPW_VERSION)"
 else
   fetch xdpw "$XDPW_URL" "$XDPW_REF"
   pristine "$SRC/xdpw" "$XDPW_REF"
-  ( cd "$SRC/xdpw" && git apply --check "$PATCHES/xdpw-window-only.patch" \
-      && git apply "$PATCHES/xdpw-window-only.patch" ) || {
-    echo "build: xdpw-window-only did not apply (drift from $XDPW_REF?)" >&2
-    exit 1; }
+  for _p in $XDPW_PATCHES; do
+    ( cd "$SRC/xdpw" && git apply --check "$PATCHES/$_p.patch" \
+        && git apply "$PATCHES/$_p.patch" ) || {
+      echo "build: $_p did not apply (xdpw drift from $XDPW_REF?)" >&2
+      exit 1; }
+  done
   _bdir=$SRC/_build/xdpw
   rm -rf -- "$_bdir"
   LDFLAGS="-Wl,-rpath,$LIBDIR${LDFLAGS:+ $LDFLAGS}" \

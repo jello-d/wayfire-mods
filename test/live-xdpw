@@ -1,5 +1,5 @@
 #!/bin/sh
-# live-xdpw <backend> <wayland display> <scratch dir>: drive one
+# live-xdpw <backend> <wayland display> <scratch dir> [consumer]: drive one
 # xdg-desktop-portal-wlr against a display, on the PRIVATE session bus this
 # runs under (live.t starts it inside dbus-run-session, with a private
 # pipewire in XDG_RUNTIME_DIR), and print one line per fact:
@@ -8,6 +8,10 @@
 #   offered <n>        lines the chooser was handed for a WINDOW request
 #   started <u>        the Start response code (0 = a stream was created)
 #   streams <n>        streams Start returned
+#   consumed <n>       buffers a browser-shaped consumer READ from that stream
+#                      in 3s (only with [consumer], test/live-pwconsume): a
+#                      stream that is created is not one anything can read
+#   consume-error ...  the consumer's link was refused, or its stream failed
 #   monitor <u>        the Start response after a MONITOR-only selection
 #   alive <yes|no>     the backend was still running after all of it
 #   exited <rc>        the backend died before answering (and its error)
@@ -19,7 +23,7 @@
 # The chooser is a script that records what it was offered and picks the
 # first line, so the test sees exactly what a human would have been shown.
 set -u
-bin=$1; disp=$2; d=$3
+bin=$1; disp=$2; d=$3; consumer=${4:-}
 B=org.freedesktop.impl.portal.desktop.wlr
 O=/org/freedesktop/portal/desktop
 I=org.freedesktop.impl.portal.ScreenCast
@@ -27,6 +31,9 @@ printf '#!/bin/sh\ntee "%s/offered" | head -n 1\n' "$d" > "$d/chooser"
 chmod +x "$d/chooser"
 printf '[screencast]\nchooser_type=dmenu\nchooser_cmd=%s/chooser\n' "$d" \
   > "$d/xdpw.conf"
+# NO SESSION MANAGER: the consumer links itself to the node Start returned
+# (see test/live-pwconsume.c for why a session manager's policy is the
+# wrong judge of a format question).
 WAYLAND_DISPLAY=$disp "$bin" -l INFO -c "$d/xdpw.conf" > "$d/xdpw.log" 2>&1 &
 p=$!
 _i=0
@@ -55,6 +62,14 @@ case $_st in
     | sed -n 's/.*"streams" a(ua{sv}) \([0-9]*\).*/\1/p')" ;;
   *) echo "streams 0" ;;
 esac
+# The node id is the field after the stream count.
+_node=$(printf '%s\n' "$_st" \
+  | sed -n 's/.*"streams" a(ua{sv}) [0-9]* \([0-9]*\) .*/\1/p')
+if [ -n "$consumer" ] && [ -n "$_node" ]; then
+  _c=$("$consumer" "$_node" 3 2>/dev/null)
+  case $_c in error*|refused*) echo "consume-error ${_c#* }" ;;
+    *) echo "${_c:-consumed none}" ;; esac
+fi
 _sess 2
 call SelectSources oosa{sv} /req/m2 /s/s2 live 1 types u 1 > /dev/null
 _m=$(call Start oossa{sv} /req/st2 /s/s2 live '' 0)

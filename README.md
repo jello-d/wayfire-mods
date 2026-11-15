@@ -6,8 +6,9 @@ upstream) + [Wayfire](https://github.com/WayfireWM/wayfire) (with a few patches)
 + wcm / wayfire-plugins-extra / wf-info (clean) + the filters and pixdecor
 decorators (with patches) + a set of custom Wayfire plugins + a patched
 [xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
-backend (window-only sharing for a sandboxed client; see
-`patches/xdpw-window-only.md`).
+backend (window-only sharing for a sandboxed client, plus two upstream fixes
+made after 0.8.1, one of which makes a window share work at all on pipewire
+1.6; see `patches/xdpw-*.md`).
 
 It is **not a fork**. Each upstream component is fetched at a pinned ref
 (`refs`) and assembled onto a pristine checkout: our patches (`patches/`) are
