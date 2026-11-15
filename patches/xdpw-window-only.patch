@@ -1,0 +1,96 @@
+diff --git a/src/screencast/ext_image_copy.c b/src/screencast/ext_image_copy.c
+index 8ce264c..fb582c7 100644
+--- a/src/screencast/ext_image_copy.c
++++ b/src/screencast/ext_image_copy.c
+@@ -318,11 +318,18 @@ void xdpw_ext_ic_session_close(struct xdpw_screencast_instance *cast) {
+ }
+ 
+ int xdpw_ext_ic_session_init(struct xdpw_screencast_instance *cast) {
+-	if (cast->ctx->ext_image_copy_capture_manager == NULL ||
+-			cast->ctx->ext_output_image_capture_source_manager == NULL) {
++	if (cast->ctx->ext_image_copy_capture_manager == NULL) {
+ 		logprint(INFO, "ext: unsupported");
+ 		return -1;
+ 	}
++	// a restored or chosen target of a kind this compositor cannot capture
++	if ((cast->target->type == MONITOR
++			&& cast->ctx->ext_output_image_capture_source_manager == NULL)
++			|| (cast->target->type == WINDOW
++			&& cast->ctx->ext_foreign_toplevel_image_capture_source_manager == NULL)) {
++		logprint(ERROR, "ext: no capture source for this target type");
++		return -1;
++	}
+ 	ext_register_session_cb(cast);
+ 
+ 	// process at least one frame so that we know
+diff --git a/src/screencast/wlr_screencast.c b/src/screencast/wlr_screencast.c
+index 0c8aad7..de7262d 100644
+--- a/src/screencast/wlr_screencast.c
++++ b/src/screencast/wlr_screencast.c
+@@ -26,10 +26,29 @@
+ #include "logger.h"
+ #include "fps_limit.h"
+ 
++/*
++ * Whether to capture through ext-image-copy-capture. Upstream requires the
++ * OUTPUT source manager, so a compositor offering only the per-window
++ * (foreign-toplevel) source cannot start at all, which is exactly what a
++ * sandboxed client that may share its own windows but never a whole screen
++ * sees. Take the ext path when either source manager is present, but prefer
++ * wlr-screencopy over window-only ext when the compositor offers it, so a
++ * compositor upstream could already serve keeps upstream's path unchanged.
++ */
++static bool xdpw_ext_ic_usable(const struct xdpw_screencast_context *ctx) {
++	if (!ctx->ext_image_copy_capture_manager) {
++		return false;
++	}
++	if (ctx->ext_output_image_capture_source_manager) {
++		return true;
++	}
++	return ctx->ext_foreign_toplevel_image_capture_source_manager
++		&& !ctx->screencopy_manager;
++}
++
+ static void wlr_frame_capture_start(struct xdpw_screencast_instance *cast) {
+ 	fps_limit_measure_start(&cast->fps_limit, cast->framerate);
+-	if (cast->ctx->ext_image_copy_capture_manager
+-			&& cast->ctx->ext_output_image_capture_source_manager) {
++	if (xdpw_ext_ic_usable(cast->ctx)) {
+ 		xdpw_ext_ic_frame_capture(cast);
+ 	} else if (cast->ctx->screencopy_manager) {
+ 		xdpw_wlr_sc_frame_capture(cast);
+@@ -50,8 +69,7 @@ void xdpw_wlr_frame_capture(struct xdpw_screencast_instance *cast) {
+ }
+ 
+ void xdpw_wlr_session_close(struct xdpw_screencast_instance *cast) {
+-	if (cast->ctx->ext_image_copy_capture_manager
+-			&& cast->ctx->ext_output_image_capture_source_manager) {
++	if (xdpw_ext_ic_usable(cast->ctx)) {
+ 		xdpw_ext_ic_session_close(cast);
+ 	} else if (cast->ctx->screencopy_manager) {
+ 		xdpw_wlr_sc_session_close(cast);
+@@ -59,8 +77,7 @@ void xdpw_wlr_session_close(struct xdpw_screencast_instance *cast) {
+ }
+ 
+ int xdpw_wlr_session_init(struct xdpw_screencast_instance *cast) {
+-	if (cast->ctx->ext_image_copy_capture_manager
+-			&& cast->ctx->ext_output_image_capture_source_manager) {
++	if (xdpw_ext_ic_usable(cast->ctx)) {
+ 		return xdpw_ext_ic_session_init(cast);
+ 	} else if (cast->ctx->screencopy_manager) {
+ 		return xdpw_wlr_sc_session_init(cast);
+@@ -568,8 +585,13 @@ int xdpw_wlr_screencopy_init(struct xdpw_state *state) {
+ 
+ 	logprint(DEBUG, "wayland: registry listeners run");
+ 
+-	if (ctx->ext_image_copy_capture_manager && ctx->ext_output_image_capture_source_manager) {
++	if (xdpw_ext_ic_usable(ctx)) {
+ 		logprint(DEBUG, "wayland: using ext_image_copy_capture");
++		if (!ctx->ext_output_image_capture_source_manager) {
++			// window sources only: never offer a monitor nobody can capture
++			state->screencast_source_types &= ~MONITOR;
++			logprint(INFO, "wayland: no output capture source, sharing windows only");
++		}
+ 	} else if (ctx->screencopy_manager && ctx->linux_dmabuf) {
+ 		if (zwp_linux_dmabuf_v1_get_version(ctx->linux_dmabuf) >= ZWP_LINUX_DMABUF_V1_GET_DEFAULT_FEEDBACK_SINCE_VERSION) {
+ 			ctx->linux_dmabuf_feedback = zwp_linux_dmabuf_v1_get_default_feedback(ctx->linux_dmabuf);

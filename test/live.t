@@ -34,6 +34,15 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   xdpw-window-only the patched portal-wlr, on a private bus with a private
+#                   pipewire: through the SANDBOX socket it starts, offers
+#                   windows only (AvailableSourceTypes 2), shows its chooser
+#                   exactly the sandbox's own windows and no monitor, starts
+#                   a stream of one, and refuses a monitor-only request;
+#                   through the plain socket it offers both (3). Stock exits
+#                   on the sandbox socket ("supports neither"). Skipped with
+#                   a loud line when pipewire, dbus-run-session or the
+#                   built backend is absent.
 #   ipc-identifier  the IPC view description carries the window's
 #                   ext-foreign-toplevel-list identifiers, each EQUAL to what
 #                   a client of that list was sent: "toplevel-identifier" to
@@ -614,6 +623,56 @@ check_toplevel_capture() {
   check toplevel-capture "$_ok" "$_detail"
 }
 
+# check_xdpw: the patched portal backend against both sockets (see the
+# header). Every process is started by name and stopped by its own pid.
+XDPW=${WFM_LIVE_XDPW:-$P/libexec/xdg-desktop-portal-wlr}
+check_xdpw() {
+  _why=
+  for _c in pipewire dbus-run-session busctl; do
+    command -v "$_c" > /dev/null 2>&1 || _why="needs $_c"
+  done
+  [ -x "$XDPW" ] || _why="no backend at $XDPW"
+  if [ -n "$_why" ]; then
+    printf '  skip xdpw-window-only: %s\n' "$_why"; return
+  fi
+  XDG_RUNTIME_DIR=$RUN pipewire > "$S/pw.log" 2>&1 &
+  _pw=$!
+  _i=0
+  until [ -S "$RUN/pipewire-0" ] || [ "$_i" -ge 50 ]; do
+    _i=$((_i + 1)); sleep 0.1
+  done
+  _x() {   # <display> <dir>
+    mkdir -p "$2"
+    XDG_RUNTIME_DIR=$RUN timeout 60 dbus-run-session \
+      --config-file="$HERE/test/live-xdpw-bus.conf" -- \
+      sh "$HERE/test/live-xdpw" "$XDPW" "$1" "$2" 2> "$2/err" | tr '\n' ' '
+  }
+  _sb=$(_x "$S/ctx.sock" "$S/xdpw-sandbox")
+  _pl=$(_x "$RUN/$WLD" "$S/xdpw-plain")
+  kill "$_pw" 2>/dev/null; wait "$_pw" 2>/dev/null
+  # The chooser's lines end "(<identifier>)"; the capture client lists
+  # "toplevel <app-id> <identifier>". The two sets must be EQUAL, taken
+  # straight after, so the count cannot drift between two looks.
+  _own=$(capture_as "$S/ctx.sock" list | awk '$1 == "toplevel" {print $3}' \
+    | sort | tr '\n' ' ')
+  _got=$(sed -n 's/^Window: .*(\([0-9a-f]*\))$/\1/p' \
+    "$S/xdpw-sandbox/offered" 2>/dev/null | sort | tr '\n' ' ')
+  _mon=$(grep -c '^Monitor' "$S/xdpw-sandbox/offered" 2>/dev/null) || _mon=0
+  _ok=0
+  has "$_sb" "types 2 " || _ok=1          # windows only through the sandbox
+  [ "$_got" = "$_own" ] || _ok=1          # exactly its own windows
+  [ -n "$_own" ] || _ok=1                 # and it has some to offer
+  [ "$_mon" = 0 ] || _ok=1                # never a monitor
+  has "$_sb" "started 0 " || _ok=1        # Start created a stream
+  has "$_sb" "streams 1 " || _ok=1
+  has "$_sb" "monitor 0 " && _ok=1        # a monitor-only Start is refused
+  has "$_sb" "monitor " || _ok=1
+  has "$_sb" "alive yes" || _ok=1         # and it survived all of it
+  has "$_pl" "types 3 " || _ok=1          # the plain client keeps both
+  check xdpw-window-only "$_ok" "sandbox [$_sb] offered [$_got] own [$_own]\
+ monitors $_mon; plain [$_pl]"
+}
+
 # ident_of <list output> <app-id>: the identifier that list gave the window
 ident_of() {
   printf '%s\n' "$1" | awk -v a="$2" '$1 == "toplevel" && $2 == a { print $3 }'
@@ -737,6 +796,7 @@ session_main() {
     check_enclave_mark "$_foot"
     check_ipc_context "$_foot"
     check_toplevel_capture
+    check_xdpw
     check_ipc_identifier
     check_activation
   else

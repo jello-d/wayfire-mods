@@ -1,0 +1,65 @@
+#!/bin/sh
+# live-xdpw <backend> <wayland display> <scratch dir>: drive one
+# xdg-desktop-portal-wlr against a display, on the PRIVATE session bus this
+# runs under (live.t starts it inside dbus-run-session, with a private
+# pipewire in XDG_RUNTIME_DIR), and print one line per fact:
+#
+#   types <n>          AvailableSourceTypes (1 monitor, 2 window)
+#   offered <n>        lines the chooser was handed for a WINDOW request
+#   started <u>        the Start response code (0 = a stream was created)
+#   streams <n>        streams Start returned
+#   monitor <u>        the Start response after a MONITOR-only selection
+#   alive <yes|no>     the backend was still running after all of it
+#   exited <rc>        the backend died before answering (and its error)
+#
+# The calls are the backend interface's own signatures (CreateSession is
+# o o s a{sv}, Start o o s s a{sv}): a wrong one creates no session, and the
+# backend then crashes on SelectSources, which reads as the patch failing.
+#
+# The chooser is a script that records what it was offered and picks the
+# first line, so the test sees exactly what a human would have been shown.
+set -u
+bin=$1; disp=$2; d=$3
+B=org.freedesktop.impl.portal.desktop.wlr
+O=/org/freedesktop/portal/desktop
+I=org.freedesktop.impl.portal.ScreenCast
+printf '#!/bin/sh\ntee "%s/offered" | head -n 1\n' "$d" > "$d/chooser"
+chmod +x "$d/chooser"
+printf '[screencast]\nchooser_type=dmenu\nchooser_cmd=%s/chooser\n' "$d" \
+  > "$d/xdpw.conf"
+WAYLAND_DISPLAY=$disp "$bin" -l INFO -c "$d/xdpw.conf" > "$d/xdpw.log" 2>&1 &
+p=$!
+_i=0
+until busctl --user status "$B" > /dev/null 2>&1; do
+  if ! kill -0 "$p" 2>/dev/null; then
+    wait "$p"; echo "exited $? $(grep -m 1 ERROR "$d/xdpw.log")"; exit 0
+  fi
+  _i=$((_i + 1)); [ "$_i" -lt 50 ] || { echo "exited timeout"; kill "$p"
+    exit 0; }
+  sleep 0.1
+done
+_t=$(busctl --user get-property "$B" "$O" "$I" AvailableSourceTypes)
+echo "types ${_t#u }"
+call() { busctl --user --timeout=10 call "$B" "$O" "$I" "$@" 2>&1; }
+_sess() {   # <n>: a fresh session handle pair
+  call CreateSession oosa{sv} "/req/c$1" "/s/s$1" live 0 > /dev/null
+}
+_sess 1
+call SelectSources oosa{sv} /req/w1 /s/s1 live 1 types u 2 > /dev/null
+_st=$(call Start oossa{sv} /req/st1 /s/s1 live '' 0)
+_n=0; [ -f "$d/offered" ] && _n=$(grep -c . "$d/offered")
+echo "offered $_n"
+echo "started $(printf '%s\n' "$_st" | awk '{print $2}')"
+case $_st in
+  *streams*) echo "streams $(printf '%s\n' "$_st" \
+    | sed -n 's/.*"streams" a(ua{sv}) \([0-9]*\).*/\1/p')" ;;
+  *) echo "streams 0" ;;
+esac
+_sess 2
+call SelectSources oosa{sv} /req/m2 /s/s2 live 1 types u 1 > /dev/null
+_m=$(call Start oossa{sv} /req/st2 /s/s2 live '' 0)
+echo "monitor $(printf '%s\n' "$_m" | awk '{print $2}')"
+if kill -0 "$p" 2>/dev/null; then echo "alive yes"; kill "$p"
+else echo "alive no"; fi
+wait "$p" 2>/dev/null
+exit 0

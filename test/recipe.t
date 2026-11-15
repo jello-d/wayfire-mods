@@ -21,7 +21,7 @@ grep -q '\${PKG_CONFIG_PATH' "$_r" \
 # the recipe names each upstream ref var; refs must define them
 . "$HERE/refs"
 for _v in WLROOTS_REF WAYFIRE_REF WCM_REF PLUGINS_EXTRA_REF FILTERS_REF \
-          WF_INFO_REF PIXDECOR_REF; do
+          WF_INFO_REF PIXDECOR_REF XDPW_REF XDPW_VERSION; do
   eval "_val=\${$_v:-}"
   [ -n "$_val" ] || fail "refs does not define $_v"
 done

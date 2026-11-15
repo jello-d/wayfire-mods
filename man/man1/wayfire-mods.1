@@ -11,7 +11,12 @@ from source
 builds a complete from-source Wayland compositor stack into a self-contained
 prefix: wlroots (clean upstream), Wayfire (with a small set of patches), wcm,
 wayfire-plugins-extra and wf-info (clean upstream), the filters and pixdecor
-decorators (with patches), and a set of custom Wayfire plugins. The upstream
+decorators (with patches), a set of custom Wayfire plugins, and a patched
+xdg-desktop-portal-wlr backend that can share a sandboxed client's own windows
+without the whole-screen capture source. Only that backend's binary is
+installed; a drop-in in
+.I /etc/systemd/user
+points the distro unit at it. The upstream
 components are fetched at pinned refs and assembled onto pristine checkouts, so
 each patch and plugin stays a discrete unit and the base is refreshed by bumping
 a ref rather than by maintaining a fork.
@@ -55,10 +60,11 @@ Print the package version and the wlroots/Wayfire pins.
 .TP
 .I refs
 The upstream URLs and pinned refs (wlroots, Wayfire, wcm, plugins-extra,
-filters, wf-info, pixdecor).
+filters, wf-info, pixdecor, xdg-desktop-portal-wlr).
 .TP
 .I patches/
-Patches applied onto the Wayfire, filters, and pixdecor checkouts.
+Patches applied onto the Wayfire, filters, pixdecor, and
+xdg-desktop-portal-wlr checkouts.
 .TP
 .I plugins/
 The custom Wayfire plugins, built against the installed Wayfire.

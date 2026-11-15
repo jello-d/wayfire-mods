@@ -2,7 +2,8 @@
 # build-wayfire <prefix> - build our from-source Wayland compositor stack into
 # <prefix> and install it there: wlroots (clean upstream) -> wayfire (+ our
 # patches) -> wcm / wayfire-plugins-extra / wf-info (clean) + filters / pixdecor
-# (+ our patches) + our own plugins. The whole recipe, reused by
+# (+ our patches) + our own plugins, then xdg-desktop-portal-wlr (+ our
+# patch; its binary only, see its section). The whole recipe, reused by
 # `setup.sh install` (prefix = /opt/wayfire, sudo) and `setup.sh verify`
 # (prefix = a throwaway dir, no sudo), so the real build and CI take the SAME
 # path.
@@ -257,6 +258,36 @@ staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_STAMP")" \
 say "pixdecor $PIXDECOR_REF (+ our patch)"
 _patched pixdecor "$LIBDIR/wayfire/libpixdecor.so" pixdecor \
   "$PIXDECOR_URL" "$PIXDECOR_REF" pixdecor-titlebar-padding.patch
+
+# --- xdg-desktop-portal-wlr: our patch, the BINARY only ----------------------
+say "xdg-desktop-portal-wlr $XDPW_VERSION (+ our patch)"
+# Not ABI-coupled to wayfire, so the pin is its own ref and patch only. Built
+# with meson and NOT `meson install`d: that would also lay a D-Bus activation
+# file and wlr.portal under $PREFIX/share, which the session's XDG_DATA_DIRS
+# lists first, so a second copy of each would shadow the distro's in some
+# lookups and not others. The distro package supplies those; its unit is
+# pointed at this binary by the drop-in setup.sh install writes.
+XDPW_BIN=$PREFIX/libexec/xdg-desktop-portal-wlr
+_w=$(pin "$XDPW_REF" "$(cat "$PATCHES/xdpw-window-only.patch")")
+if in_sync xdpw "$_w" "$XDPW_BIN"; then
+  echo "  xdpw in sync ($XDPW_VERSION)"
+else
+  fetch xdpw "$XDPW_URL" "$XDPW_REF"
+  pristine "$SRC/xdpw" "$XDPW_REF"
+  ( cd "$SRC/xdpw" && git apply --check "$PATCHES/xdpw-window-only.patch" \
+      && git apply "$PATCHES/xdpw-window-only.patch" ) || {
+    echo "build: xdpw-window-only did not apply (drift from $XDPW_REF?)" >&2
+    exit 1; }
+  _bdir=$SRC/_build/xdpw
+  rm -rf -- "$_bdir"
+  LDFLAGS="-Wl,-rpath,$LIBDIR${LDFLAGS:+ $LDFLAGS}" \
+    meson setup "$_bdir" "$SRC/xdpw" --prefix="$PREFIX" \
+      -Dbuildtype=release -Dsystemd=disabled -Dman-pages=disabled \
+      -Dwerror=false
+  ninja -C "$_bdir" -j "$JOBS"
+  $SUDO install -D -m 0755 "$_bdir/xdg-desktop-portal-wlr" "$XDPW_BIN"
+  mark xdpw "$_w"
+fi
 
 # --- assert the prefix is self-contained by rpath ---------------------------
 _missing=0

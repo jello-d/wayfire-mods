@@ -4,7 +4,10 @@ A complete from-source Wayland compositor stack, built into a self-contained
 prefix: [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) (clean
 upstream) + [Wayfire](https://github.com/WayfireWM/wayfire) (with a few patches)
 + wcm / wayfire-plugins-extra / wf-info (clean) + the filters and pixdecor
-decorators (with patches) + a set of custom Wayfire plugins.
+decorators (with patches) + a set of custom Wayfire plugins + a patched
+[xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
+backend (window-only sharing for a sandboxed client; see
+`patches/xdpw-window-only.md`).
 
 It is **not a fork**. Each upstream component is fetched at a pinned ref
 (`refs`) and assembled onto a pristine checkout: our patches (`patches/`) are
@@ -20,8 +23,12 @@ rather than by rebasing a divergent tree.
 - `patches/`: patches for Wayfire (ipc-guard, startup-image, scale-clamp,
   security-context-allowlist, output-commit-backoff,
   ipc-name-dropped-client), filters
-  (frame-margins), and pixdecor
-  (titlebar-padding). wlroots, wcm, plugins-extra, and wf-info are clean
+  (frame-margins), pixdecor
+  (titlebar-padding), and xdg-desktop-portal-wlr (window-only). Only that
+  backend's BINARY is installed (`/opt/wayfire/libexec`); the distro package
+  keeps its unit and D-Bus files, and `setup.sh install` writes a drop-in,
+  `/etc/systemd/user/xdg-desktop-portal-wlr.service.d/50-wayfire-mods.conf`,
+  pointing that unit at it. wlroots, wcm, plugins-extra, and wf-info are clean
   upstream (no patch).
 - `plugins/`: the custom Wayfire plugins (edge-flipping, edge-warp,
   workspace-wallpaper, wsync, directional-focus, atlas, ...), a

@@ -30,3 +30,14 @@ WF_INFO_REF=8ba3b9cbfd34977c2956ce7a37e2562110635d44
 
 PIXDECOR_URL=https://github.com/soreau/pixdecor
 PIXDECOR_REF=d74909d3056565a8f2cbfbc33c6951960d486e63
+
+# xdg-desktop-portal-wlr: NOT ABI-coupled to wayfire (a separate process that
+# speaks protocols), so its stamp does not fold in the wayfire one. Carries
+# xdpw-window-only.patch. Only its BINARY is installed: the distro package
+# stays installed and supplies the unit, the D-Bus activation file and
+# wlr.portal, and a systemd drop-in points the unit at our binary. So this ref
+# must stay the distro's version (`dpkg -l xdg-desktop-portal-wlr`), or the
+# distro's wlr.portal could describe a different backend than the one we run.
+XDPW_URL=https://github.com/emersion/xdg-desktop-portal-wlr
+XDPW_REF=e1d5d16f0e064a0b788c5d70c11461b15ee7a4af
+XDPW_VERSION=0.8.1
