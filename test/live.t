@@ -80,6 +80,10 @@
 #                   STILL on, the nested wayfire drops WL-2 (stock never
 #                   reads the removal: the same livelock, IPC dead)
 #   unplug-quiet    and the failures stop, because the output is gone
+#   ipc-name        a client that never reads its replies is dropped, and the
+#                   log line names it: its pid, its process name and the
+#                   reason (stock says only "Error sending json to client!",
+#                   which left a dropped event stream unexplained for weeks)
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -1009,6 +1013,50 @@ session_unplug() {
   sleep 0.5; kill -KILL "$_np" "$_bp" 2>/dev/null || :
 }
 
+# Session 8: ipc-name-dropped-client. A client renames itself (prctl) so its
+# name is unmistakable, sends requests and never reads a reply, until its
+# socket buffer is full and wayfire drops it. The log line must carry ITS
+# pid and name, and the reason. It stays alive (sleeping) while that
+# happens, so the name is still there to be read.
+session_ipcname() {
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules' 'xwayland = false' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' > "$T/ipcname.ini"
+  start_wayfire "$T/s8" "$T/ipcname.ini" 1
+  python3 -I - "$SOCK" > "$S/slow.out" 2>&1 <<'SLOWPY' &
+import ctypes, json, os, socket, struct, sys, time
+ctypes.CDLL(None).prctl(15, b"wfm-slowreader", 0, 0, 0)   # PR_SET_NAME
+print(os.getpid(), flush=True)
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+body = json.dumps({"method": "window-rules/list-outputs", "data": {}})
+msg = struct.pack("=I", len(body)) + body.encode()
+s.setblocking(False)
+for _ in range(20000):           # never read: the replies pile up
+    try:
+        s.send(msg)
+    except BlockingIOError:
+        time.sleep(0.01)
+    except OSError:
+        break                    # dropped: the point
+time.sleep(5)
+SLOWPY
+  _sp=$!
+  _i=0
+  until grep -q 'Error sending json to client' "$S/wf.log" 2>/dev/null \
+      || [ "$_i" -ge 100 ]; do
+    _i=$((_i + 1)); sleep 0.1
+  done
+  _pid=$(head -1 "$S/slow.out" 2>/dev/null)
+  _line=$(grep -m1 'Error sending json to client' "$S/wf.log" 2>/dev/null)
+  case $_line in
+    *"client pid $_pid (wfm-slowreader): Resource temporarily unavailable;"*)
+      check ipc-name 0 "named: ${_line#*client }" ;;
+    *) check ipc-name 1 "want 'pid $_pid (wfm-slowreader): Resource
+    temporarily unavailable', got: '${_line:-no drop logged}'" ;;
+  esac
+  kill "$_sp" 2>/dev/null; alive || died ipc-name
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
@@ -1017,5 +1065,6 @@ session_gpu
 session_warp
 session_backoff
 session_unplug
+session_ipcname
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

@@ -1,0 +1,69 @@
+diff --git a/plugins/ipc/ipc.cpp b/plugins/ipc/ipc.cpp
+index 9f647716..17dca5bb 100644
+--- a/plugins/ipc/ipc.cpp
++++ b/plugins/ipc/ipc.cpp
+@@ -10,6 +10,9 @@
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ #include <cstring>
++#include <cerrno>
++#include <fstream>
++#include <string>
+ 
+ /**
+  * Handle WL_EVENT_READABLE on the socket.
+@@ -308,6 +311,28 @@ static bool write_exact(int fd, const char *buf, ssize_t n)
+     return true;
+ }
+ 
++// wayfire-mods (ipc-name-dropped-client): who is on the other end of FD, as
++// "pid N (name)", asked only once a send has failed. SO_PEERCRED is the peer
++// as it connected; its name is /proc/<pid>/comm, "?" if it has gone.
++static std::string describe_peer(int fd)
++{
++    struct ucred cred;
++    socklen_t len = sizeof(cred);
++    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0)
++    {
++        return "(peer unknown)";
++    }
++
++    std::string comm = "?";
++    std::ifstream f("/proc/" + std::to_string(cred.pid) + "/comm");
++    if (!std::getline(f, comm) || comm.empty())
++    {
++        comm = "?";
++    }
++
++    return "pid " + std::to_string(cred.pid) + " (" + comm + ")";
++}
++
+ bool wf::ipc::client_t::send_json(wf::json_t json)
+ {
+     bool status = false;
+@@ -315,15 +340,23 @@ bool wf::ipc::client_t::send_json(wf::json_t json)
+     {
+         if (size > MAX_MESSAGE_LEN)
+         {
+-            LOGE("Error sending json to client: message too long!");
++            LOGE("Error sending json to client ", describe_peer(fd),
++                ": message too long!");
+             shutdown(fd, SHUT_RDWR);
+             return;
+         }
+ 
+         uint32_t len = size;
++        errno = 0;
+         if (!write_exact(fd, (char*)&len, 4) || !write_exact(fd, buffer, len))
+         {
+-            LOGE("Error sending json to client!");
++            // wayfire-mods (ipc-name-dropped-client): WHO, and WHY. EAGAIN
++            // is a client that stopped reading (its buffer is full), EPIPE
++            // one that has gone; stock said only "client".
++            const int err = errno;
++            LOGE("Error sending json to client ", describe_peer(fd), ": ",
++                err ? strerror(err) : "nothing written",
++                "; disconnecting it");
+             shutdown(fd, SHUT_RDWR);
+             return;
+         }
