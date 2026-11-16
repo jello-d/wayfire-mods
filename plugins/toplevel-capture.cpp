@@ -18,8 +18,18 @@
 // gets an inert source. The lists already make a foreign window unreachable;
 // the check is the second wall. A source renders the window, CROPPED TO ITS
 // GEOMETRY (no shadow, no enclave-mark frame), into an offscreen buffer and
-// hands that to the copy-capture session. Whole-output capture is a separate
-// global that the security-context allowlist does not offer to sandboxes.
+// hands that to the copy-capture session.
+//
+// SCREENS. The real whole-output capture (wayfire core's) never reaches a
+// sandbox: the allowlist does not name it and this plugin's filter hides it
+// too. Instead each instance gets its OWN ext_output_image_capture_source_
+// manager_v1 global, which renders an output with ONLY that instance's
+// windows over black: decorations included, the enclave mark not, an enclave
+// window drawn whole where a personal one covers it, and the pointer only
+// while the topmost window under it is the instance's. The global is scoped
+// through security-context.hpp's instance_scope_t, so the security-context
+// plugin shows it to that instance alone whatever the allowlist says, and a
+// compositor without this plugin offers an enclave no screen at all.
 //
 // Replaces upstream `ext-toplevel`; do not load both.
 
@@ -32,6 +42,8 @@
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/util.hpp>
 #include <wayfire/view.hpp>
+#include <wayfire/workspace-set.hpp>
+#include <wayfire/output-layout.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/plugins/common/security-context.hpp>
 #include <wayfire/plugins/common/toplevel-identifier.hpp>
@@ -48,7 +60,10 @@ extern "C"
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
+#include <wlr/types/wlr_output.h>
+#include "ext-image-capture-source-v1-protocol.h"
 }
+#include "viewer-pass.hpp"
 
 namespace sc = wf::security_context;
 
@@ -358,6 +373,432 @@ void view_source_t::keep_client_drawing(const timespec& now)
     }
 }
 
+// ---------------------------------------------------------------------------
+// SCREEN capture for an enclave: one output, drawn with ONLY that instance's
+// windows, over black. Nothing personal is ever in the draw list, so nothing
+// personal can reach the frame: not the panel, the wallpaper, a notification,
+// or a personal window, and not even where one sits (an enclave window a
+// personal one covers is drawn whole, user's call 2026-11-15). Decorations
+// come with each window (they are in its subtree); the enclave mark does not
+// (viewer-pass.hpp).
+class screen_source_t;
+
+struct screen_wrap_t
+{
+    wlr_ext_image_capture_source_v1 base;
+    screen_source_t *self;
+};
+
+class screen_source_t
+{
+  public:
+    screen_wrap_t wrap;
+    wf::output_t *output;
+    std::string instance;
+    wlr_swapchain *swapchain = nullptr;
+    // One draw list per window, each in its own parent's coordinates.
+    struct layer_t
+    {
+        wf::scene::node_ptr root;
+        std::vector<wf::scene::render_instance_uptr> instances;
+    };
+    std::vector<layer_t> layers;
+    int started   = 0;
+    int with_cursors = 0;    // sessions that asked for the pointer drawn in
+    bool dirty    = true;
+    bool wanted   = false;
+    bool rendered = false;
+    wf::wl_idle_call idle;
+    wf::shared_data::ref_ptr_t<wf::enclave_capture::viewer_pass_t> viewer_pass;
+
+    // Any change to what is in the scene (a window mapped, raised, moved to
+    // another workspace) can change what this screen shows.
+    wf::signal::connection_t<wf::scene::root_node_update_signal> on_scene =
+        [=] (wf::scene::root_node_update_signal*) { mark_dirty(); };
+    wf::signal::connection_t<wf::workspace_changed_signal> on_workspace =
+        [=] (wf::workspace_changed_signal*) { mark_dirty(); };
+    // The pointer moved: only a share that draws it has a new frame to make.
+    wf::signal::connection_t<
+        wf::post_input_event_signal<wlr_pointer_motion_event>>
+    on_motion = [=] (auto*) { if (with_cursors > 0) { mark_dirty(); } };
+    wf::signal::connection_t<
+        wf::post_input_event_signal<wlr_pointer_motion_absolute_event>>
+    on_motion_abs = [=] (auto*) { if (with_cursors > 0) { mark_dirty(); } };
+
+    screen_source_t(wf::output_t *output, std::string instance);
+    ~screen_source_t();
+
+    bool belongs(wayfire_view view) const
+    {
+        auto ctx = sc::lookup_client(view->get_client());
+        return ctx && (ctx->instance_id == instance) && view->is_mapped() &&
+               (view->get_output() == output);
+    }
+
+    // The draw lists, bottom to top: this instance's windows in stacking
+    // order (a child dialog comes with its parent's subtree, so only roots),
+    // then its top-level popups, which live in the output's unmanaged layer.
+    void regen()
+    {
+        layers.clear();
+        viewer_pass->depth++;
+        auto add = [&] (wayfire_view view)
+        {
+            layer_t layer;
+            layer.root = view->get_root_node();
+            layer.root->gen_render_instances(layer.instances,
+                [=] (const wf::regionf_t&) { mark_dirty(); }, output);
+            layers.push_back(std::move(layer));
+        };
+        auto views = output->wset()->get_views(wf::WSET_MAPPED_ONLY |
+            wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING);
+        for (auto it = views.rbegin(); it != views.rend(); ++it)
+        {
+            if (!(*it)->parent && belongs(*it))
+            {
+                add(*it);
+            }
+        }
+
+        auto unmanaged = output->node_for_layer(wf::scene::layer::UNMANAGED);
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            if (!wf::toplevel_cast(view) && belongs(view) &&
+                (view->get_root_node()->parent() == unmanaged.get()))
+            {
+                add(view);
+            }
+        }
+
+        viewer_pass->depth--;
+    }
+
+    void mark_dirty()
+    {
+        dirty = true;
+        schedule();
+    }
+
+    void schedule()
+    {
+        if ((started > 0) && wanted && dirty)
+        {
+            idle.run_once([=] { produce_frame(); });
+        }
+    }
+
+    bool update_constraints();
+    void produce_frame();
+    void draw_pointer(wlr_buffer *buffer);
+};
+
+static screen_wrap_t *screen_wrap_of(wlr_ext_image_capture_source_v1 *base)
+{
+    return reinterpret_cast<screen_wrap_t*>(base);
+}
+
+static void screen_start(wlr_ext_image_capture_source_v1 *base,
+    bool with_cursors)
+{
+    auto self = screen_wrap_of(base)->self;
+    self->with_cursors += with_cursors ? 1 : 0;
+    if (self->started++ == 0)
+    {
+        self->mark_dirty();
+    }
+}
+
+static void screen_stop(wlr_ext_image_capture_source_v1 *base)
+{
+    auto self = screen_wrap_of(base)->self;
+    if (--self->started == 0)
+    {
+        self->with_cursors = 0;
+        self->layers.clear();
+        self->wanted = false;
+    }
+}
+
+static void screen_request_frame(wlr_ext_image_capture_source_v1 *base,
+    bool schedule_frame)
+{
+    auto self = screen_wrap_of(base)->self;
+    self->wanted = true;
+    if (schedule_frame && !self->rendered)
+    {
+        self->dirty = true;
+    }
+
+    self->schedule();
+}
+
+static const wlr_ext_image_capture_source_v1_interface screen_impl = {
+    .start = screen_start,
+    .stop  = screen_stop,
+    .request_frame = screen_request_frame,
+    .copy_frame    = source_copy_frame,
+    .get_pointer_cursor = nullptr,
+};
+
+screen_source_t::screen_source_t(wf::output_t *output, std::string instance) :
+    output(output), instance(std::move(instance))
+{
+    wrap.self = this;
+    wlr_ext_image_capture_source_v1_init(&wrap.base, &screen_impl);
+    wf::get_core().scene()->connect(&on_scene);
+    output->connect(&on_workspace);
+    wf::get_core().connect(&on_motion);
+    wf::get_core().connect(&on_motion_abs);
+    update_constraints();
+}
+
+screen_source_t::~screen_source_t()
+{
+    on_scene.disconnect();
+    on_workspace.disconnect();
+    on_motion.disconnect();
+    on_motion_abs.disconnect();
+    layers.clear();
+    wlr_ext_image_capture_source_v1_finish(&wrap.base);
+    if (swapchain)
+    {
+        wlr_swapchain_destroy(swapchain);
+    }
+}
+
+// The output's layout size at its scale, in its own format (as for a window).
+bool screen_source_t::update_constraints()
+{
+    auto og = output->get_relative_geometry();
+    float scale = output->handle->scale;
+    uint32_t w = std::max(1, (int)std::round(og.width * scale));
+    uint32_t h = std::max(1, (int)std::round(og.height * scale));
+    if (swapchain && (wrap.base.width == w) && (wrap.base.height == h))
+    {
+        return false;
+    }
+
+    uint64_t implicit = DRM_FORMAT_MOD_INVALID;
+    wlr_drm_format fallback{DRM_FORMAT_ARGB8888, 1, 1, &implicit};
+    const wlr_drm_format *fmt = output->handle->swapchain ?
+        &output->handle->swapchain->format : &fallback;
+    auto& core = wf::get_core();
+    auto next  = wlr_swapchain_create(core.allocator, w, h, fmt);
+    if (!next)
+    {
+        LOGE("toplevel-capture: no ", w, "x", h, " swapchain for output ",
+            output->to_string(), "; this screen cannot be captured");
+        return false;
+    }
+
+    if (swapchain)
+    {
+        wlr_swapchain_destroy(swapchain);
+    }
+
+    swapchain = next;
+    wlr_ext_image_capture_source_v1_set_constraints_from_swapchain(&wrap.base,
+        swapchain, core.renderer);
+    wl_signal_emit_mutable(&wrap.base.events.constraints_update, nullptr);
+    return true;
+}
+
+void screen_source_t::produce_frame()
+{
+    if (started == 0)
+    {
+        return;
+    }
+
+    update_constraints();
+    regen();
+    wlr_buffer *buffer = swapchain ? wlr_swapchain_acquire(swapchain) : nullptr;
+    if (!buffer)
+    {
+        return;
+    }
+
+    auto og = output->get_relative_geometry();
+    float scale = output->handle->scale;
+    bool first  = true;
+    // The output's own origin, in the same space a window's parent reports
+    // in: windows are laid out OUTPUT-LOCAL (measured: a window on an output
+    // at layout x=1280 has its parent at 0,0), so a box taken from the layout
+    // geometry missed every window on any output away from the origin. Taken
+    // relative to the output's node, it is right whichever the space is.
+    auto ref = output->node_for_layer(wf::scene::layer::WORKSPACE)->parent();
+    auto out_origin = ref ? ref->to_global({0, 0}) : wf::pointf_t{0, 0};
+    // Black first, even with no window to draw: an empty screen is a valid
+    // frame, and a stale buffer would show the previous one.
+    auto pass = [&] (std::vector<wf::scene::render_instance_uptr> *instances,
+                     wf::scene::node_ptr root)
+    {
+        auto origin = (root && root->parent()) ?
+            root->parent()->to_global({0, 0}) : out_origin;
+        wf::geometry_t box{og.x + (int)(out_origin.x - origin.x),
+            og.y + (int)(out_origin.y - origin.y), og.width, og.height};
+        wf::render_target_t target{wf::render_buffer_t(buffer,
+            {(int)wrap.base.width, (int)wrap.base.height})};
+        target.geometry = box;
+        target.scale    = scale;
+        std::vector<wf::scene::render_instance_uptr> none;
+        wf::render_pass_params_t params;
+        params.background_color = {0, 0, 0, 1};
+        params.damage    = box;
+        params.target    = target;
+        params.instances = instances ? instances : &none;
+        params.flags     = first ? wf::RPASS_CLEAR_BACKGROUND : 0;
+        params.reference_output = output;
+        wf::render_pass_t::run(params);
+        first = false;
+    };
+    pass(nullptr, nullptr);
+    for (auto& layer : layers)
+    {
+        pass(&layer.instances, layer.root);
+    }
+
+
+    if (with_cursors > 0)
+    {
+        draw_pointer(buffer);
+    }
+
+    pixman_region32_t damage;
+    pixman_region32_init_rect(&damage, 0, 0, wrap.base.width, wrap.base.height);
+    frame_event_t event{};
+    event.base.damage = &damage;
+    event.buffer = buffer;
+    clock_gettime(CLOCK_MONOTONIC, &event.when);
+    dirty    = false;
+    wanted   = false;
+    rendered = true;
+    wl_signal_emit_mutable(&wrap.base.events.frame, &event.base);
+    wlr_buffer_unlock(buffer);
+    pixman_region32_fini(&damage);
+}
+
+// The pointer, ONLY when the topmost window under it is this instance's
+// (user's call, 2026-11-15): over a personal window, or over nothing of the
+// enclave's, the share shows no pointer, so it cannot be followed around
+// personal space. Drawn from the output's own cursor image, upright: the
+// share is in the output's LOGICAL orientation, and wlroots keeps the cursor
+// hotspot in the output's buffer (rotated) space, so it is turned back.
+void screen_source_t::draw_pointer(wlr_buffer *buffer)
+{
+    auto at = wf::get_core().get_cursor_position();
+    auto lg = output->get_layout_geometry();
+    if ((at.x < lg.x) || (at.y < lg.y) || (at.x >= lg.x + lg.width) ||
+        (at.y >= lg.y + lg.height))
+    {
+        return;
+    }
+
+    auto view = wf::get_core().get_view_at(at);
+    if (!view || !belongs(view))
+    {
+        return;
+    }
+
+    float scale = output->handle->scale;
+    wlr_output_cursor *cursor;
+    wl_list_for_each(cursor, &output->handle->cursors, link)
+    {
+        if (!cursor->enabled || !cursor->visible || !cursor->texture)
+        {
+            continue;
+        }
+
+        int w = cursor->texture->width, h = cursor->texture->height;
+        // The hotspot back from the output's buffer space to the image's.
+        wlr_box hs{cursor->hotspot_x, cursor->hotspot_y, 0, 0};
+        auto inv = wlr_output_transform_invert(cursor->transform);
+        int tw = (cursor->transform % 2) ? h : w;
+        int th = (cursor->transform % 2) ? w : h;
+        wlr_box_transform(&hs, &hs, inv, tw, th);
+        wlr_box dst{(int)std::round((at.x - lg.x) * scale) - hs.x,
+            (int)std::round((at.y - lg.y) * scale) - hs.y, w, h};
+        auto pass = wlr_renderer_begin_buffer_pass(wf::get_core().renderer,
+            buffer, nullptr);
+        if (!pass)
+        {
+            return;
+        }
+
+        wlr_render_texture_options opts{};
+        opts.texture = cursor->texture;
+        opts.dst_box = dst;
+        opts.blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED;
+        wlr_render_pass_add_texture(pass, &opts);
+        wlr_render_pass_submit(pass);
+        return;
+    }
+}
+
+// The per-instance ext_output_image_capture_source_manager_v1 global. Its
+// user data is set BEFORE the global exists, so the instance it serves is
+// known while it is first advertised (security-context.hpp, instance_scope).
+struct screen_manager_t
+{
+    std::string instance;
+    wl_global *global = nullptr;
+    std::function<screen_source_t*(wf::output_t*)> source_for;
+};
+
+static void screen_manager_destroy(wl_client*, wl_resource *resource)
+{
+    wl_resource_destroy(resource);
+}
+
+static void screen_manager_create_source(wl_client *client,
+    wl_resource *resource, uint32_t new_id, wl_resource *output_resource)
+{
+    auto mgr = (screen_manager_t*)wl_resource_get_user_data(resource);
+    auto wlr = wlr_output_from_resource(output_resource);
+    auto requester = sc::lookup_client(client);
+    auto out = wlr ? wf::get_core().output_layout->find_output(wlr) : nullptr;
+    // The filter shows this global to its own instance only; this is the
+    // second wall. A refused or vanished output gets an inert source.
+    screen_source_t *source = (mgr && out && requester &&
+        (requester->instance_id == mgr->instance)) ? mgr->source_for(out) :
+        nullptr;
+    if (!source)
+    {
+        LOGW("toplevel-capture: refused a screen capture request",
+            requester ? " from instance '" + requester->instance_id + "'" : "");
+        wlr_ext_image_capture_source_v1 refused;
+        wlr_ext_image_capture_source_v1_init(&refused, &refused_impl);
+        wlr_ext_image_capture_source_v1_create_resource(&refused, client,
+            new_id);
+        wlr_ext_image_capture_source_v1_finish(&refused);
+        return;
+    }
+
+    wlr_ext_image_capture_source_v1_create_resource(&source->wrap.base, client,
+        new_id);
+}
+
+static const struct ext_output_image_capture_source_manager_v1_interface
+    screen_manager_impl = {
+    .create_source = screen_manager_create_source,
+    .destroy = screen_manager_destroy,
+};
+
+static void screen_manager_bind(wl_client *client, void *data, uint32_t version,
+    uint32_t id)
+{
+    auto resource = wl_resource_create(client,
+        &ext_output_image_capture_source_manager_v1_interface, version, id);
+    if (!resource)
+    {
+        wl_client_post_no_memory(client);
+        return;
+    }
+
+    wl_resource_set_implementation(resource, &screen_manager_impl, data,
+        nullptr);
+}
+
 // Per window: its handles in the lists it belongs to, and its source.
 struct toplevel_record_t : public wf::custom_data_t
 {
@@ -402,7 +843,78 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *manager = nullptr;
     std::unique_ptr<wf::wayland_global_filter_t> filter;
     wf::shared_data::ref_ptr_t<sc::registry_t> registry;
+    wf::shared_data::ref_ptr_t<sc::instance_scope_t> scope_data;
     wf::wl_listener_wrapper on_new_request;
+    // Screen capture, per instance: the manager global, and a source per
+    // output, shared by every session on it.
+    std::map<std::string, std::unique_ptr<screen_manager_t>> screen_managers;
+    std::map<std::pair<std::string, wf::output_t*>,
+        std::unique_ptr<screen_source_t>> screens;
+
+    screen_source_t *screen_for(const std::string& instance, wf::output_t *out)
+    {
+        auto& slot = screens[{instance, out}];
+        if (!slot)
+        {
+            slot = std::make_unique<screen_source_t>(out, instance);
+        }
+
+        return slot.get();
+    }
+
+    // Registered with the sandbox registry BEFORE the global exists, keyed by
+    // the user data the global is created with, so the security-context
+    // filter shows it to this instance only from its very first advertisement.
+    void screen_manager(const std::string& instance)
+    {
+        if (screen_managers.count(instance))
+        {
+            return;
+        }
+
+        auto mgr = std::make_unique<screen_manager_t>();
+        mgr->instance   = instance;
+        mgr->source_for = [=] (wf::output_t *out)
+        {
+            return screen_for(instance, out);
+        };
+        auto raw = mgr.get();
+        screen_managers[instance] = std::move(mgr);
+        raw->global = wl_global_create(wf::get_core().display,
+            &ext_output_image_capture_source_manager_v1_interface, 1, raw,
+            screen_manager_bind);
+        LOGI("toplevel-capture: screen capture for instance '", instance, "'");
+    }
+
+    std::optional<std::string> screen_owner(const wl_global *global)
+    {
+        if (wl_global_get_interface(global) !=
+            &ext_output_image_capture_source_manager_v1_interface)
+        {
+            return std::nullopt;
+        }
+
+        auto data = wl_global_get_user_data(global);
+        for (auto& [instance, mgr] : screen_managers)
+        {
+            if (mgr.get() == data)
+            {
+                return instance;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    wf::signal::connection_t<wf::output_removed_signal> on_output_removed =
+        [=] (wf::output_removed_signal *ev)
+    {
+        for (auto it = screens.begin(); it != screens.end();)
+        {
+            it = (it->first.second == ev->output) ? screens.erase(it) :
+                std::next(it);
+        }
+    };
 
     // Create, THEN insert: creating the global advertises it at once, which
     // runs global_visible() for every connected client while we are still
@@ -426,6 +938,18 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     // one; never another instance's, never a list this plugin does not own.
     bool global_visible(const wl_client *client, const wl_global *global)
     {
+        if (auto owner = screen_owner(global))
+        {
+            auto ctx = sc::lookup_client(client);
+            return ctx && (ctx->instance_id == *owner);
+        }
+
+        auto real = wf::get_core().protocols.output_image_capture_source;
+        if (real && (global == real->global))
+        {
+            return !sc::lookup_client(client);
+        }
+
         if (std::string(wl_global_get_interface(global)->name) !=
             wlr_ext_foreign_toplevel_list_v1_interface_name())
         {
@@ -499,6 +1023,7 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
         [=] (sc::context_committed_signal *ev)
     {
         enclave_list(ev->info.instance_id);
+        screen_manager(ev->info.instance_id);
     };
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped =
         [=] (wf::view_mapped_signal *ev) { track(ev->view); };
@@ -539,10 +1064,17 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
             return global_visible(c, g);
         });
 
+        scope_data->resolvers.push_back([=] (const wl_global *global)
+        {
+            return screen_owner(global);
+        });
         for (auto& info : registry->committed)
         {
             enclave_list(info.instance_id);
+            screen_manager(info.instance_id);
         }
+
+        wf::get_core().output_layout->connect(&on_output_removed);
 
         registry->connect(&on_committed);
         wf::get_core().connect(&on_mapped);

@@ -16,6 +16,19 @@
  *                                 first comes only when the window changes.
  *                                 Prints "streamed <n> retries <r>", r being
  *                                 the frames redone for a size change.
+ *   live-capture screen <output> [<x>,<y> ...]
+ *                                 capture the output named <output> through the
+ *                                 ext_output_image_capture_source_manager_v1
+ *                                 this client is offered (its own enclave's,
+ *                                 when sandboxed); prints "managers <n>"
+ *                                 (how many such globals it sees), then
+ *                                 "screen <w>x<h> red <n> green <n> blue <n>
+ *                                 magenta <n> black <n> other <n>", pixel
+ *                                 counts by colour, then "at <x> <y> <r> <g>
+ *                                 <b>" for each point asked (buffer pixels),
+ *                                 or "stopped" / "failed". With
+ *                                 LIVE_CAPTURE_CURSORS set, the session asks
+ *                                 for the pointer drawn in (paint_cursors).
  *   live-capture capture-dmabuf <app_id>
  *                                 as capture, into a GPU buffer (gbm + linux-
  *                                 dmabuf) of a format and modifier the
@@ -55,6 +68,34 @@ static struct ext_foreign_toplevel_list_v1 *lists[8];
 static int n_lists;
 static struct ext_foreign_toplevel_image_capture_source_manager_v1 *source_mgr;
 static struct ext_image_copy_capture_manager_v1 *copy_mgr;
+static struct ext_output_image_capture_source_manager_v1 *output_mgr;
+static int n_output_mgrs;
+#define MAX_OUTPUTS 8
+static struct { struct wl_output *output; char name[64]; } outputs[MAX_OUTPUTS];
+static int n_outputs;
+
+static void o_geometry(void *d, struct wl_output *o, int32_t x, int32_t y,
+                       int32_t pw, int32_t ph, int32_t sp, const char *make,
+                       const char *model, int32_t t)
+{ (void)d; (void)o; (void)x; (void)y; (void)pw; (void)ph; (void)sp;
+  (void)make; (void)model; (void)t; }
+static void o_mode(void *d, struct wl_output *o, uint32_t f, int32_t w,
+                   int32_t h, int32_t r)
+{ (void)d; (void)o; (void)f; (void)w; (void)h; (void)r; }
+static void o_done(void *d, struct wl_output *o) { (void)d; (void)o; }
+static void o_scale(void *d, struct wl_output *o, int32_t f)
+{ (void)d; (void)o; (void)f; }
+static void o_name(void *d, struct wl_output *o, const char *name)
+{
+  (void)o;
+  long i = (long)d;
+  snprintf(outputs[i].name, sizeof(outputs[i].name), "%s", name);
+}
+static void o_description(void *d, struct wl_output *o, const char *desc)
+{ (void)d; (void)o; (void)desc; }
+static const struct wl_output_listener output_listener = {
+  o_geometry, o_mode, o_done, o_scale, o_name, o_description,
+};
 
 static struct {
   struct ext_foreign_toplevel_handle_v1 *handle;
@@ -93,6 +134,20 @@ static void global_add(void *data, struct wl_registry *reg, uint32_t name,
       ext_foreign_toplevel_image_capture_source_manager_v1_interface.name))
     source_mgr = wl_registry_bind(reg, name,
       &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1);
+  else if (!strcmp(iface,
+      ext_output_image_capture_source_manager_v1_interface.name)) {
+    n_output_mgrs++;
+    if (!output_mgr)
+      output_mgr = wl_registry_bind(reg, name,
+        &ext_output_image_capture_source_manager_v1_interface, 1);
+  } else if (!strcmp(iface, wl_output_interface.name) && version >= 4
+             && n_outputs < MAX_OUTPUTS) {
+    outputs[n_outputs].output = wl_registry_bind(reg, name,
+                                                 &wl_output_interface, 4);
+    wl_output_add_listener(outputs[n_outputs].output, &output_listener,
+                           (void *)(long)n_outputs);
+    n_outputs++;
+  }
   else if (!strcmp(iface, ext_image_copy_capture_manager_v1_interface.name))
     copy_mgr = wl_registry_bind(reg, name,
       &ext_image_copy_capture_manager_v1_interface, 1);
@@ -244,6 +299,20 @@ static int wait_session(struct wl_display *display)
 static unsigned char *pixels;
 static size_t stride;
 
+/* The pixel at x,y as r, g, b, whatever byte order the session's shm format
+ * has: ARGB/XRGB8888 are B, G, R, A in memory, ABGR/XBGR8888 R, G, B, A. A
+ * reading that assumed one order swapped red and blue on a BGR session,
+ * which green, the colour every earlier check used, could never show. */
+static void rgb_at(uint32_t x, uint32_t y, unsigned char out[3])
+{
+  unsigned char *c = pixels + y * stride + x * 4;
+  int bgr = shm_format == WL_SHM_FORMAT_ABGR8888
+            || shm_format == WL_SHM_FORMAT_XBGR8888;
+  out[0] = bgr ? c[0] : c[2];
+  out[1] = c[1];
+  out[2] = bgr ? c[2] : c[0];
+}
+
 /* An shm buffer for the session's current constraints. */
 static struct wl_buffer *make_buffer(void)
 {
@@ -364,6 +433,75 @@ static int capture_once(struct wl_display *display,
   return 0;
 }
 
+/* One frame of the named output; counts its pixels by colour and prints
+ * the pixel at each "x,y" in points[]. */
+static int do_screen(struct wl_display *display, const char *want,
+                     char **points, int n_points)
+{
+  printf("managers %d\n", n_output_mgrs);
+  struct wl_output *first_output = NULL;
+  for (int i = 0; i < n_outputs; i++)
+    if (!strcmp(outputs[i].name, want))
+      first_output = outputs[i].output;
+  if (!output_mgr || !first_output || !copy_mgr) {
+    printf("not found\n");
+    return 3;
+  }
+  struct ext_image_capture_source_v1 *source =
+    ext_output_image_capture_source_manager_v1_create_source(output_mgr,
+                                                             first_output);
+  uint32_t opts = getenv("LIVE_CAPTURE_CURSORS") ?
+    EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS : 0;
+  struct ext_image_copy_capture_session_v1 *session =
+    ext_image_copy_capture_manager_v1_create_session(copy_mgr, source, opts);
+  ext_image_copy_capture_session_v1_add_listener(session, &session_listener,
+                                                 NULL);
+  int rc = wait_session(display);
+  if (rc)
+    return rc;
+  struct wl_buffer *buffer = make_buffer();
+  if (!buffer) {
+    printf("failed buffer\n");
+    return 3;
+  }
+  for (int tries = 0; (rc = capture_once(display, session, buffer)) == 2
+       && tries < 3; tries++) {
+    while (constraints_gen == buffer_gen && !session_stopped)
+      if (wl_display_dispatch(display) < 0)
+        return 1;
+    wl_buffer_destroy(buffer);
+    buffer = make_buffer();
+  }
+  if (rc)
+    return rc == 2 ? 3 : rc;
+  long red = 0, green = 0, blue = 0, magenta = 0, black = 0, other = 0;
+  for (uint32_t y = 0; y < buf_h; y++)
+    for (uint32_t x = 0; x < buf_w; x++) {
+      unsigned char c[3];
+      rgb_at(x, y, c);
+      int r = c[0] > 200, g = c[1] > 200, b = c[2] > 200;
+      int rz = c[0] < 60, gz = c[1] < 60, bz = c[2] < 60;
+      if (r && gz && bz) red++;
+      else if (g && rz && bz) green++;
+      else if (b && rz && gz) blue++;
+      else if (r && b && gz) magenta++;
+      else if (rz && gz && bz) black++;
+      else other++;
+    }
+  printf("screen %ux%u red %ld green %ld blue %ld magenta %ld black %ld"
+         " other %ld\n", buf_w, buf_h, red, green, blue, magenta, black,
+         other);
+  for (int i = 0; i < n_points; i++) {
+    unsigned x, y;
+    if (sscanf(points[i], "%u,%u", &x, &y) != 2 || x >= buf_w || y >= buf_h)
+      continue;
+    unsigned char c[3];
+    rgb_at(x, y, c);
+    printf("at %u %u %u %u %u\n", x, y, c[0], c[1], c[2]);
+  }
+  return 0;
+}
+
 /* make_buffer or, for capture-dmabuf, make_dmabuf_buffer */
 static int use_dmabuf;
 static struct wl_buffer *next_buffer(void)
@@ -433,9 +571,9 @@ static int do_capture(struct wl_display *display, const char *app_id,
     return 0;
   }
 #endif
-  /* ARGB8888/XRGB8888 are little-endian in memory: B, G, R, A. */
-  unsigned char *c = pixels + (buf_h / 2) * stride + (buf_w / 2) * 4;
-  printf("captured %ux%u %u %u %u\n", buf_w, buf_h, c[2], c[1], c[0]);
+  unsigned char c[3];
+  rgb_at(buf_w / 2, buf_h / 2, c);
+  printf("captured %ux%u %u %u %u\n", buf_w, buf_h, c[0], c[1], c[2]);
   return 0;
 }
 
@@ -443,8 +581,11 @@ int main(int argc, char **argv)
 {
   int stream = argc == 4 && !strcmp(argv[1], "stream");
   use_dmabuf = argc == 3 && !strcmp(argv[1], "capture-dmabuf");
-  if (argc < 2 || (strcmp(argv[1], "list") && argc != 3 && !stream)) {
-    fprintf(stderr, "usage: live-capture list | capture <app_id>"
+  int screen = argc >= 3 && !strcmp(argv[1], "screen");
+  if (argc < 2 || (strcmp(argv[1], "list") && !screen
+                   && argc != 3 && !stream)) {
+    fprintf(stderr, "usage: live-capture list | screen <output> [x,y...]"
+            " | capture <app_id>"
             " | stream <app_id> <n> | capture-dmabuf <app_id>\n");
     return 1;
   }
@@ -462,5 +603,7 @@ int main(int argc, char **argv)
   wl_display_roundtrip(display);
   if (!strcmp(argv[1], "list"))
     return do_list();
+  if (screen)
+    return do_screen(display, argv[2], argv + 3, argc - 3);
   return do_capture(display, argv[2], stream ? atoi(argv[3]) : 1);
 }

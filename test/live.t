@@ -34,14 +34,21 @@
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
 #                   entirely off-screen (stock has no such plugin)
+#   screen-capture  an enclave's SCREEN share, through its own socket: one
+#                   screen-capture global (its own; the allowlist never names
+#                   the protocol), its window drawn WHOLE where a personal one
+#                   covers it, no personal pixel, no enclave mark, and the
+#                   window's decorations exactly as on screen; the plain
+#                   socket gets the real screen (stock has no such source)
 #   xdpw-window-only the patched portal-wlr, on a private bus with a private
 #                   pipewire: through the SANDBOX socket it starts, offers
-#                   windows only (AvailableSourceTypes 2), shows its chooser
-#                   exactly the sandbox's own windows and no monitor, starts
-#                   a stream of one that a browser-shaped consumer READS
-#                   frames from, restores that window for a second session
-#                   without re-running the chooser, and refuses a
-#                   monitor-only request;
+#                   screens and windows (3; windows only, 2, where the
+#                   compositor has no enclave screen source), shows its
+#                   chooser exactly the sandbox's own windows and a monitor
+#                   per output, starts a window stream a browser-shaped
+#                   consumer READS frames from, restores that window for a
+#                   second session without re-running the chooser, and
+#                   starts and reads a monitor stream;
 #                   through the plain socket it offers both (3). Stock exits
 #                   on the sandbox socket ("supports neither"). Skipped with
 #                   a loud line when pipewire, dbus-run-session or the
@@ -57,6 +64,10 @@
 #                   on the VISIBLE edge, not a shadow-width out where the
 #                   shadow-inclusive geometry would put it, and its corners
 #                   are rounded like the window's (session 4)
+#   screen-pointer  in an enclave's screen share the POINTER is drawn only when
+#                   the topmost window under it is the enclave's: over its
+#                   window, yes; over a personal window, and over nothing, no
+#                   (a session of its own, with stipc to move the pointer)
 #   capture-gpu     on a real GPU (a session of its own, only when a render
 #                   node is usable and libgbm is present; otherwise a loud
 #                   skip line): a window captures into a dmabuf of a format
@@ -455,12 +466,17 @@ check_secctx() {
   done
   _seen=$(interfaces "$S/ctx.sock")
   _plain=$(interfaces "$WLD")
-  if [ "$_seen" != "$ALLOW" ]; then
-    check security-ctx 1 "sandboxed client sees [$_seen], want [$ALLOW]"
+  # The allowlist, plus the enclave's OWN screen-capture global, which the
+  # allowlist never names: it is scoped to the instance by toplevel-capture
+  # (security-context.hpp, instance_scope_t), so it is the only one there.
+  _want=$(printf '%s\n' $ALLOW ext_output_image_capture_source_manager_v1 \
+    | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')
+  if [ "$_seen" != "$_want" ]; then
+    check security-ctx 1 "sandboxed client sees [$_seen], want [$_want]"
   else
     case " $_plain " in
       *" zwlr_screencopy_manager_v1 "*)
-        check security-ctx 0 "sandboxed sees exactly the allowlist" ;;
+        check security-ctx 0 "sandboxed: the allowlist and its own screen" ;;
       *) check security-ctx 1 "a PLAIN client lost screencopy: [$_plain]" ;;
     esac
   fi
@@ -641,6 +657,55 @@ check_toplevel_capture() {
 # check_xdpw: the patched portal backend against both sockets (see the
 # header). Every process is started by name and stopped by its own pid.
 XDPW=${WFM_LIVE_XDPW:-$P/libexec/xdg-desktop-portal-wlr}
+# check_screen_capture: an enclave's SCREEN share draws its own windows and
+# nothing else. Through the enclave socket: exactly one screen-capture global
+# (its own: the allowlist never names the protocol), an enclave window drawn
+# WHOLE where a personal one covers it, no personal pixel and no enclave mark,
+# and the window's decorations exactly as on screen. Through the personal
+# socket, the real screen, mark and all.
+check_screen_capture() {
+  for _v in wfm-foot wfm-enclave; do
+    _i=$(wait_view "v['app-id'] == '$_v'" | jpy "d['id']") &&
+      place "$_i" 5000 5000 300 200
+  done
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+    --app-id wfm-blue -o colors.background=0000ff sleep 600 \
+    > "$S/blue.log" 2>&1 &
+  CTX_PIDS="$CTX_PIDS $!"
+  _b=$(wait_view "v['app-id'] == 'wfm-blue'") || {
+    check screen-capture 1 "the enclave window never mapped"; return; }
+  client red foot -c "$T/foot.ini" --app-id wfm-red \
+    -o colors.background=ff0000 sleep 600
+  CTX_PIDS="$CTX_PIDS $!"
+  _r=$(wait_view "v['app-id'] == 'wfm-red'") || {
+    check screen-capture 1 "the personal window never mapped"; return; }
+  place "$(printf '%s\n' "$_b" | jpy "d['id']")" 100 150 500 400
+  place "$(printf '%s\n' "$_r" | jpy "d['id']")" 350 300 500 400
+  sleep 1
+  # 450,450 is under BOTH (red on top); 300,160 is the blue window's titlebar.
+  _en=$(capture_as "$S/ctx.sock" screen HEADLESS-1 450,450 300,160 \
+    | tr '\n' ' ')
+  _pe=$(capture_as "$WLD" screen HEADLESS-1 450,450 300,160 | tr '\n' ' ')
+  _cnt() { printf '%s\n' "$1" | sed -n "s/.* $2 \([0-9]*\) .*/\1/p"; }
+  _px() { printf '%s\n' "$1" |
+    sed -n "s/.*at $2 \([0-9]* [0-9]* [0-9]*\).*/\1/p"; }
+  _ok=0
+  has "$_en" "managers 1 " || _ok=1                # its own, and only that
+  has "$_pe" "managers 1 " || _ok=1                # the real one only
+  [ "$(_cnt "$_en" red)" = 0 ] || _ok=1            # nothing personal
+  [ "$(_cnt "$_en" magenta)" = 0 ] || _ok=1        # no enclave mark
+  [ "$(_cnt "$_pe" magenta)" -gt 0 ] 2>/dev/null || _ok=1  # mark on screen
+  [ "$(_cnt "$_pe" red)" -gt 0 ] 2>/dev/null || _ok=1
+  [ "$(_px "$_en" '450 450')" = "0 0 255" ] || _ok=1   # drawn whole
+  [ "$(_px "$_pe" '450 450')" = "255 0 0" ] || _ok=1   # covered on screen
+  _tb=$(_px "$_en" '300 160')
+  case $_tb in ''|'0 0 0'|'0 0 255') _ok=1 ;; esac     # a titlebar is drawn
+  [ "$_tb" = "$(_px "$_pe" '300 160')" ] || _ok=1      # exactly as on screen
+  # the blue window is bigger in the share than on screen: it is not covered
+  [ "$(_cnt "$_en" blue)" -gt "$(_cnt "$_pe" blue)" ] 2>/dev/null || _ok=1
+  check screen-capture "$_ok" "enclave [$_en]; personal [$_pe]"
+}
+
 check_xdpw() {
   _why=
   for _c in pipewire dbus-run-session busctl; do
@@ -659,8 +724,10 @@ check_xdpw() {
   done
   _x() {   # <display> <dir>
     mkdir -p "$2"
-    XDG_RUNTIME_DIR=$RUN timeout 60 dbus-run-session \
-      --config-file="$HERE/test/live-xdpw-bus.conf" -- \
+    # The ticker keeps drawing; any other window here is still, and a still
+    # window's stream yields one frame, which reads like a stall.
+    WINDOW_PICK='\[wfm-tick\]$' XDG_RUNTIME_DIR=$RUN timeout 60 \
+      dbus-run-session --config-file="$HERE/test/live-xdpw-bus.conf" -- \
       sh "$HERE/test/live-xdpw" "$XDPW" "$1" "$2" "$T/pwconsume" \
       2> "$2/err" | tr '\n' ' '
   }
@@ -678,16 +745,20 @@ check_xdpw() {
     "$S/xdpw-sandbox/offered" 2>/dev/null | sort | tr '\n' ' ')
   _mon=$(grep -c '^Monitor' "$S/xdpw-sandbox/offered" 2>/dev/null) || _mon=0
   _ok=0
-  has "$_sb" "types 2 " || _ok=1          # windows only through the sandbox
+  # Screens AND windows through the sandbox: toplevel-capture gives the
+  # enclave a screen source that draws only its own windows, so the backend
+  # takes upstream's path and offers monitors (one per output, 2 here). The
+  # window-only patch still guards a compositor without that source.
+  has "$_sb" "types 3 " || _ok=1
   [ "$_got" = "$_own" ] || _ok=1          # exactly its own windows
   [ -n "$_own" ] || _ok=1                 # and it has some to offer
-  [ "$_mon" = 0 ] || _ok=1                # never a monitor
+  [ "$_mon" = 2 ] || _ok=1                # a monitor per output
   has "$_sb" "started 0 " || _ok=1        # Start created a stream
   has "$_sb" "streams 1 " || _ok=1
   # and something can READ it: Start succeeding is not a share working
   case $_sb in *"consumed "[1-9]*) ;; *) _ok=1 ;; esac
-  has "$_sb" "monitor 0 " && _ok=1        # a monitor-only Start is refused
-  has "$_sb" "monitor " || _ok=1
+  has "$_sb" "monitor 0 " || _ok=1        # a monitor share starts
+  case $_sb in *"screen consumed "[1-9]*) ;; *) _ok=1 ;; esac  # and is read
   # A second session handed the first one's restore data reuses the window
   # without asking (Chrome previews through one session and shares through
   # another; 0.8.1 restores only outputs, so the person picked twice).
@@ -824,6 +895,7 @@ session_main() {
     check_enclave_mark "$_foot"
     check_ipc_context "$_foot"
     check_toplevel_capture
+    check_screen_capture
     check_xdpw
     check_ipc_identifier
     check_activation
@@ -832,6 +904,7 @@ session_main() {
     check enclave-mark 1 "foot never mapped"
     check ipc-context 1 "foot never mapped"
     check toplevel-capture 1 "foot never mapped"
+    check screen-capture 1 "foot never mapped"
     check ipc-identifier 1 "foot never mapped"
     check activation 1 "foot never mapped"
   fi
@@ -893,6 +966,67 @@ check_mark_hugs() {
   else
     check mark-hugs 1 "$_d (mark is [$MARK])"
   fi
+}
+
+# Session: the POINTER in an enclave's screen share, which is drawn only when
+# the topmost window under it is the enclave's own (user's call, 2026-11-15).
+# Its own session, since stipc (which moves the pointer) must not touch the
+# main session's checks. An enclave window with a personal one over part of
+# it; the pointer placed over the enclave window, over the personal window
+# and over nothing, and each share taken with and without paint_cursors.
+session_pointer() {
+  write_ini "$T/ptr.ini" "$(printf '%s\n' '[output:HEADLESS-1]' \
+    'mode = 1280x720@60000')"
+  sed -i "s/^plugins = .*/& stipc/" "$T/ptr.ini"
+  start_wayfire "$T/s9" "$T/ptr.ini" 1
+  client secctx "$T/secctx" "$S/ctx.sock" titan; SC_PID=$!
+  until_true "grep -q ready '$S/secctx.log'"
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+    --app-id wfm-blue -o colors.background=0000ff sleep 600 \
+    > "$S/blue.log" 2>&1 &
+  ENC_PID=$!
+  # The personal window maps SECOND, so it is on top where the two overlap:
+  # started together, either can win, and the test measures the wrong one.
+  if ! _b=$(wait_view "v['app-id'] == 'wfm-blue'"); then
+    check screen-pointer 1 "the enclave window never mapped"; _live_stop
+    return
+  fi
+  client red foot -c "$T/foot.ini" --app-id wfm-red \
+    -o colors.background=ff0000 sleep 600
+  FOOT_PID=$!
+  if ! _r=$(wait_view "v['app-id'] == 'wfm-red'"); then
+    check screen-pointer 1 "the personal window never mapped"; _live_stop
+    return
+  fi
+  place "$(printf '%s\n' "$_b" | jpy "d['id']")" 100 150 500 400
+  place "$(printf '%s\n' "$_r" | jpy "d['id']")" 350 300 500 400
+  sleep 1
+  # <x> <y>: the pointer there, then "with|without" pixels just off its tip
+  _shot() {
+    ipc stipc/move_cursor "{\"x\": $1, \"y\": $2}" > /dev/null
+    sleep 0.5
+    _pts="$1,$2 $(($1 + 2)),$(($2 + 4)) $(($1 + 3)),$(($2 + 8))"
+    export LIVE_CAPTURE_CURSORS=1
+    # shellcheck disable=SC2086  # three points
+    _w=$(capture_as "$S/ctx.sock" screen HEADLESS-1 $_pts | grep '^at' |
+      tr '\n' ' ')
+    unset LIVE_CAPTURE_CURSORS
+    # shellcheck disable=SC2086
+    _n=$(capture_as "$S/ctx.sock" screen HEADLESS-1 $_pts | grep '^at' |
+      tr '\n' ' ')
+    printf '%s|%s\n' "$_w" "$_n"
+  }
+  _en=$(_shot 200 300)     # over the enclave window: drawn
+  _pe=$(_shot 500 450)     # over the personal window: not
+  _no=$(_shot 1000 100)    # over nothing: not
+  _ok=0
+  [ -n "${_en%%|*}" ] || _ok=1
+  [ "${_en%%|*}" != "${_en#*|}" ] || _ok=1
+  [ "${_pe%%|*}" = "${_pe#*|}" ] || _ok=1
+  [ "${_no%%|*}" = "${_no#*|}" ] || _ok=1
+  check screen-pointer "$_ok" "with|without: over enclave [$_en]; over\
+ personal [$_pe]; over nothing [$_no]"
+  _live_stop
 }
 
 # Session 3: the same capture, on a real GPU, so a dmabuf path exists.
@@ -1149,6 +1283,7 @@ write_fixtures
 session_scale
 session_main
 session_hug
+session_pointer
 session_gpu
 session_warp
 session_backoff

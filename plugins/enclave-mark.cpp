@@ -27,6 +27,7 @@
 // An instance not listed gets a stable colour hashed from its name, so two
 // enclaves always differ and an unlisted sandbox is still marked.
 
+#include "viewer-pass.hpp"
 #include <wayfire/core.hpp>
 #include <wayfire/config/config-manager.hpp>
 #include <wayfire/option-wrapper.hpp>
@@ -124,6 +125,7 @@ class mark_node_t : public wf::scene::node_t
     wf::color_t label_color{0, 0, 0, 0};
     int label_size = 0;
     wf::dimensions_t label_px{0, 0};
+    wf::shared_data::ref_ptr_t<wf::enclave_capture::viewer_pass_t> viewer_pass;
 
   public:
     mark_node_t(wayfire_toplevel_view view, const mark_style_t *style,
@@ -458,6 +460,12 @@ class mark_node_t : public wf::scene::node_t
         std::vector<wf::scene::render_instance_uptr>& instances,
         wf::scene::damage_callback push_damage, wf::output_t *output) override
     {
+        // Nothing for a capture viewers will see (viewer-pass.hpp).
+        if (viewer_pass->depth > 0)
+        {
+            return;
+        }
+
         instances.push_back(std::make_unique<render_instance_t>(this,
             push_damage));
     }

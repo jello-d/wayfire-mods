@@ -13,6 +13,7 @@
 #                      stream that is created is not one anything can read
 #   consume-error ...  the consumer's link was refused, or its stream failed
 #   monitor <u>        the Start response after a MONITOR-only selection
+#   screen <...>       what a consumer read from that monitor's stream
 #   restore <yes|no>   the window share's Start reply carried restore data
 #                      (the session asked to persist, as Chrome does)
 #   reprompt <n>       chooser runs during a SECOND session handed that
@@ -26,7 +27,8 @@
 # backend then crashes on SelectSources, which reads as the patch failing.
 #
 # The chooser is a script that records what it was offered and picks the
-# first line, so the test sees exactly what a human would have been shown.
+# first WINDOW line (the first MONITOR line for the monitor-only request),
+# so the test sees exactly what a human would have been shown.
 # It also counts its runs, which is how a restore that silently re-prompts is
 # told from one that does not.
 set -u
@@ -34,8 +36,15 @@ bin=$1; disp=$2; d=$3; consumer=${4:-}
 B=org.freedesktop.impl.portal.desktop.wlr
 O=/org/freedesktop/portal/desktop
 I=org.freedesktop.impl.portal.ScreenCast
-printf '#!/bin/sh\necho run >> "%s/runs"\ntee "%s/offered" | head -n 1\n' \
-  "$d" "$d" > "$d/chooser"
+# What it picks is read from <scratch>/pick at each run: the backend starts
+# the chooser with its own environment, so a variable set on the call would
+# never reach it. Every run APPENDS to <scratch>/offered. The window pick is
+# WINDOW_PICK (a grep pattern, default the first window): a share of a window
+# that never changes yields one frame, which reads exactly like a stalled
+# stream, so live.t names a window that keeps drawing.
+printf '%s\n' '#!/bin/sh' "d=$d" 'echo run >> "$d/runs"' \
+  'pick=$(cat "$d/pick" 2>/dev/null) || pick="^Window: "' \
+  'tee -a "$d/offered" | grep -m 1 "$pick"' > "$d/chooser"
 chmod +x "$d/chooser"
 printf '[screencast]\nchooser_type=dmenu\nchooser_cmd=%s/chooser\n' "$d" \
   > "$d/xdpw.conf"
@@ -59,6 +68,7 @@ call() { busctl --user --timeout=10 call "$B" "$O" "$I" "$@" 2>&1; }
 _sess() {   # <n>: a fresh session handle pair
   call CreateSession oosa{sv} "/req/c$1" "/s/s$1" live 0 > /dev/null
 }
+printf '%s\n' "${WINDOW_PICK:-^Window: }" > "$d/pick"
 _sess 1
 call SelectSources oosa{sv} /req/w1 /s/s1 live 2 types u 2 \
   persist_mode u 1 > /dev/null
@@ -80,9 +90,16 @@ if [ -n "$consumer" ] && [ -n "$_node" ]; then
     *) echo "${_c:-consumed none}" ;; esac
 fi
 _sess 2
+echo '^Monitor: ' > "$d/pick"     # the chooser runs inside SelectSources
 call SelectSources oosa{sv} /req/m2 /s/s2 live 1 types u 1 > /dev/null
+printf '%s\n' "${WINDOW_PICK:-^Window: }" > "$d/pick"
 _m=$(call Start oossa{sv} /req/st2 /s/s2 live '' 0)
 echo "monitor $(printf '%s\n' "$_m" | awk '{print $2}')"
+_mn=$(printf '%s\n' "$_m" \
+  | sed -n 's/.*"streams" a(ua{sv}) [0-9]* \([0-9]*\) .*/\1/p')
+if [ -n "$consumer" ] && [ -n "$_mn" ]; then
+  echo "screen $("$consumer" "$_mn" 3 2>/dev/null)"
+fi
 # THE RESTORE: Chrome previews through one session and shares through a
 # second, carrying the first one's restore data so nobody is asked twice.
 _id=$(printf '%s\n' "$_st" \

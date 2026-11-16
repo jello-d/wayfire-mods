@@ -15,10 +15,10 @@ index 1bdc5a4f..ab60d069 100644
  </wayfire>
 diff --git a/plugins/common/wayfire/plugins/common/security-context.hpp b/plugins/common/wayfire/plugins/common/security-context.hpp
 new file mode 100644
-index 00000000..f39044fb
+index 00000000..52160421
 --- /dev/null
 +++ b/plugins/common/wayfire/plugins/common/security-context.hpp
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,106 @@
 +#pragma once
 +
 +#include <functional>
@@ -29,6 +29,7 @@ index 00000000..f39044fb
 +#include <wayfire/plugins/common/shared-core-data.hpp>
 +
 +struct wl_client;
++struct wl_global;
 +
 +namespace wf
 +{
@@ -71,6 +72,44 @@ index 00000000..f39044fb
 +};
 +
 +/**
++ * Globals a plugin made for ONE sandbox instance (its own screen capture,
++ * say), shared with wf::shared_data::ref_ptr_t<instance_scope_t>. A resolver
++ * returns the instance a global belongs to, or nullopt when it is not one of
++ * its own. The security-context-v1 plugin shows such a global to clients of
++ * THAT instance only, whatever the allowlist says, and to no other client,
++ * sandboxed or not. So the allowlist never names the protocol, and a plugin
++ * that is not loaded leaves nothing exposed.
++ *
++ * A resolver must answer from data it set BEFORE creating the global (the
++ * global's user data, for instance): creating a global advertises it at
++ * once, which runs the filter for every connected client.
++ *
++ * A type of its own rather than a member of registry_t, deliberately: shared
++ * data is allocated by whichever plugin asks first, so growing registry_t
++ * would let a plugin built against the old header allocate it short.
++ */
++struct instance_scope_t
++{
++    std::vector<std::function<std::optional<std::string>(const wl_global*)>>
++    resolvers;
++};
++
++/** The sandbox instance @global was made for, if any plugin says so. */
++inline std::optional<std::string> global_instance(const wl_global *global)
++{
++    wf::shared_data::ref_ptr_t<instance_scope_t> scope_data;
++    for (auto& scope : scope_data->resolvers)
++    {
++        if (auto instance = scope(global))
++        {
++            return instance;
++        }
++    }
++
++    return std::nullopt;
++}
++
++/**
 + * The security context @client connected through, or std::nullopt if it did
 + * not connect through one (or the security-context-v1 plugin is not loaded).
 + */
@@ -87,7 +126,7 @@ index 00000000..f39044fb
 +}
 +}
 diff --git a/plugins/protocols/security-context-v1.cpp b/plugins/protocols/security-context-v1.cpp
-index 258ba38a..b57c4a01 100644
+index 258ba38a..f791d8bd 100644
 --- a/plugins/protocols/security-context-v1.cpp
 +++ b/plugins/protocols/security-context-v1.cpp
 @@ -3,7 +3,10 @@
@@ -101,12 +140,20 @@ index 258ba38a..b57c4a01 100644
  
  class wayfire_security_context_v1 : public wf::plugin_interface_t
  {
-@@ -22,48 +25,115 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+@@ -22,48 +25,123 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
          filter = core.create_global_filter();
          filter->set_filter([this] (const wl_client *client, const wl_global *global)
          {
 -            if (!is_privileged_protocol(global))
 +            auto ctx = wlr_security_context_manager_v1_lookup_client(manager, client);
++
++            // A global made for one sandbox instance: that instance's clients
++            // only, never the allowlist's business, never anyone else's.
++            if (auto owner = wf::security_context::global_instance(global))
++            {
++                return ctx && ctx->instance_id && (*owner == ctx->instance_id);
++            }
++
 +            if (!ctx)
 +            {
 +                // Not connected through a security context: sees everything.
@@ -237,7 +284,7 @@ index 258ba38a..b57c4a01 100644
      }
  
      bool is_unloadable() override
-@@ -74,9 +144,12 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
+@@ -74,9 +152,12 @@ class wayfire_security_context_v1 : public wf::plugin_interface_t
    private:
      wlr_security_context_manager_v1 *manager = nullptr;
      std::unique_ptr<wf::wayland_global_filter_t> filter;

@@ -25,14 +25,16 @@ rather than by rebasing a divergent tree.
   security-context-allowlist, output-commit-backoff,
   ipc-name-dropped-client), filters
   (frame-margins), pixdecor
-  (titlebar-padding), and xdg-desktop-portal-wlr (window-only). Only that
+  (titlebar-padding), and xdg-desktop-portal-wlr (window-only,
+  window-restore, chooser-app-id, and two upstream fixes). Only that
   backend's BINARY is installed (`/opt/wayfire/libexec`); the distro package
   keeps its unit and D-Bus files, and `setup.sh install` writes a drop-in,
   `/etc/systemd/user/xdg-desktop-portal-wlr.service.d/50-wayfire-mods.conf`,
   pointing that unit at it. wlroots, wcm, plugins-extra, and wf-info are clean
   upstream (no patch).
 - `plugins/`: the custom Wayfire plugins (edge-flipping, edge-warp,
-  workspace-wallpaper, wsync, directional-focus, atlas, ...), a
+  workspace-wallpaper, wsync, directional-focus, atlas, toplevel-capture, which
+  also gives each enclave a screen share of only its own windows, ...), a
   self-contained meson project.
 - `libexec/build-wayfire`: the whole build recipe (fetch, patch, build in
   dependency order, rpath, incremental stamps).
