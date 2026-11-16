@@ -13,6 +13,11 @@
 #                      stream that is created is not one anything can read
 #   consume-error ...  the consumer's link was refused, or its stream failed
 #   monitor <u>        the Start response after a MONITOR-only selection
+#   restore <yes|no>   the window share's Start reply carried restore data
+#                      (the session asked to persist, as Chrome does)
+#   reprompt <n>       chooser runs during a SECOND session handed that
+#                      data: 0, or Chrome's real share asks the person again
+#   restored <...>     what a consumer read from that restored stream
 #   alive <yes|no>     the backend was still running after all of it
 #   exited <rc>        the backend died before answering (and its error)
 #
@@ -22,12 +27,15 @@
 #
 # The chooser is a script that records what it was offered and picks the
 # first line, so the test sees exactly what a human would have been shown.
+# It also counts its runs, which is how a restore that silently re-prompts is
+# told from one that does not.
 set -u
 bin=$1; disp=$2; d=$3; consumer=${4:-}
 B=org.freedesktop.impl.portal.desktop.wlr
 O=/org/freedesktop/portal/desktop
 I=org.freedesktop.impl.portal.ScreenCast
-printf '#!/bin/sh\ntee "%s/offered" | head -n 1\n' "$d" > "$d/chooser"
+printf '#!/bin/sh\necho run >> "%s/runs"\ntee "%s/offered" | head -n 1\n' \
+  "$d" "$d" > "$d/chooser"
 chmod +x "$d/chooser"
 printf '[screencast]\nchooser_type=dmenu\nchooser_cmd=%s/chooser\n' "$d" \
   > "$d/xdpw.conf"
@@ -52,7 +60,8 @@ _sess() {   # <n>: a fresh session handle pair
   call CreateSession oosa{sv} "/req/c$1" "/s/s$1" live 0 > /dev/null
 }
 _sess 1
-call SelectSources oosa{sv} /req/w1 /s/s1 live 1 types u 2 > /dev/null
+call SelectSources oosa{sv} /req/w1 /s/s1 live 2 types u 2 \
+  persist_mode u 1 > /dev/null
 _st=$(call Start oossa{sv} /req/st1 /s/s1 live '' 0)
 _n=0; [ -f "$d/offered" ] && _n=$(grep -c . "$d/offered")
 echo "offered $_n"
@@ -74,6 +83,30 @@ _sess 2
 call SelectSources oosa{sv} /req/m2 /s/s2 live 1 types u 1 > /dev/null
 _m=$(call Start oossa{sv} /req/st2 /s/s2 live '' 0)
 echo "monitor $(printf '%s\n' "$_m" | awk '{print $2}')"
+# THE RESTORE: Chrome previews through one session and shares through a
+# second, carrying the first one's restore data so nobody is asked twice.
+_id=$(printf '%s\n' "$_st" \
+  | sed -n 's/.*"toplevel_identifier" s "\([^"]*\)".*/\1/p')
+if [ -n "$_id" ]; then
+  echo "restore yes"
+  _r0=$(grep -c . "$d/runs" 2>/dev/null) || _r0=0
+  _sess 3
+  call SelectSources oosa{sv} /req/w3 /s/s3 live 3 types u 2 \
+    persist_mode u 1 restore_data '(suv)' wlroots 1 a{sv} 1 \
+    toplevel_identifier s "$_id" > /dev/null
+  _s3=$(call Start oossa{sv} /req/st3 /s/s3 live '' 0)
+  _r1=$(grep -c . "$d/runs" 2>/dev/null) || _r1=0
+  echo "reprompt $((_r1 - _r0))"
+  _n3=$(printf '%s\n' "$_s3" \
+    | sed -n 's/.*"streams" a(ua{sv}) [0-9]* \([0-9]*\) .*/\1/p')
+  if [ -n "$consumer" ] && [ -n "$_n3" ]; then
+    echo "restored $("$consumer" "$_n3" 3 2>/dev/null)"
+  else
+    echo "restored none"
+  fi
+else
+  echo "restore no"
+fi
 if kill -0 "$p" 2>/dev/null; then echo "alive yes"; kill "$p"
 else echo "alive no"; fi
 wait "$p" 2>/dev/null

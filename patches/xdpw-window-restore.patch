@@ -1,0 +1,79 @@
+diff --git a/include/screencast_common.h b/include/screencast_common.h
+index bccedc1..13c0e1a 100644
+--- a/include/screencast_common.h
++++ b/include/screencast_common.h
+@@ -148,6 +148,7 @@ struct xdpw_screencast_target {
+ struct xdpw_screencast_restore_data {
+ 	uint32_t version;
+ 	const char *output_name;
++	const char *toplevel_identifier;
+ };
+ 
+ struct xdpw_format_modifier_pair {
+diff --git a/src/screencast/screencast.c b/src/screencast/screencast.c
+index a8524d0..1fa30b7 100644
+--- a/src/screencast/screencast.c
++++ b/src/screencast/screencast.c
+@@ -176,7 +176,8 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
+ 			}
+ 
+ 		} else {
+-			sess->screencast_data.persist_mode = PERSIST_NONE;
++			sess->screencast_data.persist_mode = sess->screencast_data.persist_mode > PERSIST_TRANSIENT
++				? PERSIST_TRANSIENT : sess->screencast_data.persist_mode;
+ 		}
+ 	}
+ 	if (!target_initialized) {
+@@ -437,6 +438,9 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
+ 					if (strcmp(rdKey, "output_name") == 0) {
+ 						sd_bus_message_read(msg, "v", "s", &restore_data.output_name);
+ 						logprint(INFO, "dbus: option restore_data.output_name: %s", restore_data.output_name);
++					} else if (strcmp(rdKey, "toplevel_identifier") == 0) {
++						sd_bus_message_read(msg, "v", "s", &restore_data.toplevel_identifier);
++						logprint(INFO, "dbus: option restore_data.toplevel_identifier: %s", restore_data.toplevel_identifier);
+ 					} else {
+ 						logprint(WARN, "dbus: unknown option %s", rdKey);
+ 						sd_bus_message_skip(msg, "v");
+@@ -698,6 +702,16 @@ static int method_screencast_start(sd_bus_message *msg, void *data,
+ 		if (ret < 0) {
+ 			return ret;
+ 		}
++	} else if (sess->screencast_data.persist_mode != PERSIST_NONE &&
++			cast->target->toplevel && cast->target->toplevel->identifier) {
++		ret = sd_bus_message_append(reply, "{sv}",
++			"restore_data", "(suv)",
++			"wlroots", XDP_CAST_DATA_VER,
++			"a{sv}", 1, "toplevel_identifier", "s",
++			cast->target->toplevel->identifier);
++		if (ret < 0) {
++			return ret;
++		}
+ 	}
+ 
+ 	ret = sd_bus_message_close_container(reply);
+diff --git a/src/screencast/wlr_screencast.c b/src/screencast/wlr_screencast.c
+index de7262d..95506b9 100644
+--- a/src/screencast/wlr_screencast.c
++++ b/src/screencast/wlr_screencast.c
+@@ -190,6 +190,21 @@ static struct xdpw_wlr_output *xdpw_wlr_output_find(struct xdpw_screencast_conte
+ 
+ bool xdpw_wlr_target_from_data(struct xdpw_screencast_context *ctx, struct xdpw_screencast_target *target,
+ 		struct xdpw_screencast_restore_data *data) {
++	if (data->toplevel_identifier) {
++		struct xdpw_toplevel *toplevel;
++		wl_list_for_each(toplevel, &ctx->toplevels, link) {
++			if (toplevel->identifier &&
++					strcmp(toplevel->identifier, data->toplevel_identifier) == 0) {
++				target->type = WINDOW;
++				target->toplevel = toplevel;
++				return true;
++			}
++		}
++		return false;
++	}
++	if (!data->output_name) {
++		return false;
++	}
+ 	struct xdpw_wlr_output *out = NULL;
+ 	out = xdpw_wlr_output_find_by_name(&ctx->output_list, data->output_name);
+ 

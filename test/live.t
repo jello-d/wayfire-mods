@@ -39,7 +39,9 @@
 #                   windows only (AvailableSourceTypes 2), shows its chooser
 #                   exactly the sandbox's own windows and no monitor, starts
 #                   a stream of one that a browser-shaped consumer READS
-#                   frames from, and refuses a monitor-only request;
+#                   frames from, restores that window for a second session
+#                   without re-running the chooser, and refuses a
+#                   monitor-only request;
 #                   through the plain socket it offers both (3). Stock exits
 #                   on the sandbox socket ("supports neither"). Skipped with
 #                   a loud line when pipewire, dbus-run-session or the
@@ -684,6 +686,12 @@ check_xdpw() {
   case $_sb in *"consumed "[1-9]*) ;; *) _ok=1 ;; esac
   has "$_sb" "monitor 0 " && _ok=1        # a monitor-only Start is refused
   has "$_sb" "monitor " || _ok=1
+  # A second session handed the first one's restore data reuses the window
+  # without asking (Chrome previews through one session and shares through
+  # another; 0.8.1 restores only outputs, so the person picked twice).
+  has "$_sb" "restore yes" || _ok=1
+  has "$_sb" "reprompt 0 " || _ok=1
+  case $_sb in *"restored consumed "[1-9]*) ;; *) _ok=1 ;; esac
   has "$_sb" "alive yes" || _ok=1         # and it survived all of it
   has "$_pl" "types 3 " || _ok=1          # the plain client keeps both
   case $_pl in *"consumed "[1-9]*) ;; *) _ok=1 ;; esac
