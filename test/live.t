@@ -667,12 +667,14 @@ check_xdpw() {
   _sb=$(_x "$S/ctx.sock" "$S/xdpw-sandbox")
   _pl=$(_x "$RUN/$WLD" "$S/xdpw-plain")
   kill "$_pw" 2>/dev/null; wait "$_pw" 2>/dev/null
-  # The chooser's lines end "(<identifier>)"; the capture client lists
-  # "toplevel <app-id> <identifier>". The two sets must be EQUAL, taken
-  # straight after, so the count cannot drift between two looks.
-  _own=$(capture_as "$S/ctx.sock" list | awk '$1 == "toplevel" {print $3}' \
-    | sort | tr '\n' ' ')
-  _got=$(sed -n 's/^Window: .*(\([0-9a-f]*\))$/\1/p' \
+  # The chooser's lines end "(<identifier>) [<app-id>]" (the app id is
+  # xdpw-chooser-app-id's, for the picker's icons); the capture client lists
+  # "toplevel <app-id> <identifier>". The two sets of PAIRS must be EQUAL,
+  # taken straight after, so the count cannot drift between two looks, and a
+  # label that lost or mangled its app id fails here.
+  _own=$(capture_as "$S/ctx.sock" list \
+    | awk '$1 == "toplevel" {print $3 "/" $2}' | sort | tr '\n' ' ')
+  _got=$(sed -n 's/^Window: .*(\([0-9a-f]*\)) \[\([^]]*\)\]$/\1\/\2/p' \
     "$S/xdpw-sandbox/offered" 2>/dev/null | sort | tr '\n' ' ')
   _mon=$(grep -c '^Monitor' "$S/xdpw-sandbox/offered" 2>/dev/null) || _mon=0
   _ok=0

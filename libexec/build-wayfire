@@ -273,7 +273,7 @@ XDPW_BIN=$PREFIX/libexec/xdg-desktop-portal-wlr
 # pipewire 1.6: 0.8.1 offers it at framerate 0 and every consumer's link is
 # refused ("no more output formats"; an enclave's Meet, 2026-11-15).
 XDPW_PATCHES="xdpw-upstream-896cee8 xdpw-upstream-2e67398 xdpw-window-only
-  xdpw-window-restore"
+  xdpw-window-restore xdpw-chooser-app-id"
 _w=$(pin "$XDPW_REF" \
   "$(for _p in $XDPW_PATCHES; do cat "$PATCHES/$_p.patch"; done)")
 if in_sync xdpw "$_w" "$XDPW_BIN"; then

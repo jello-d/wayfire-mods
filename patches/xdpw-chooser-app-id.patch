@@ -1,0 +1,14 @@
+diff --git a/src/screencast/chooser.c b/src/screencast/chooser.c
+index ab27b30..f9573f5 100644
+--- a/src/screencast/chooser.c
++++ b/src/screencast/chooser.c
+@@ -121,7 +121,8 @@ static char *get_output_label(struct xdpw_wlr_output *output, enum xdpw_chooser_
+ 
+ static char *get_toplevel_label(struct xdpw_toplevel *toplevel, enum xdpw_chooser_types chooser_type) {
+ 	if (chooser_type == XDPW_CHOOSER_DMENU) {
+-		return format_str("Window: %s (%s)", toplevel->title, toplevel->identifier);
++		return format_str("Window: %s (%s) [%s]", toplevel->title,
++			toplevel->identifier, toplevel->app_id ? toplevel->app_id : "");
+ 	} else {
+ 		return format_str("Window: %s", toplevel->identifier);
+ 	}
