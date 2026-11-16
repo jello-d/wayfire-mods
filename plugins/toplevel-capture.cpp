@@ -31,12 +31,23 @@
 // plugin shows it to that instance alone whatever the allowlist says, and a
 // compositor without this plugin offers an enclave no screen at all.
 //
+// THE REVERSE, for a person. Core's screen capture global is hidden from
+// every client, and unsandboxed ones get this plugin's PERSONAL manager
+// instead: the output as it is shown, with every enclave view covered by an
+// opaque black box (veil_node_t, in front of the view's own drawing, so a
+// personal window above it still draws over it). A personal client asking
+// for an enclave WINDOW gets black frames at its size. wlr-screencopy and
+// export-dmabuf are NOT covered: they copy the composited frame itself, and
+// that is deliberate (user's call, 2026-11-15): a share reaches other people
+// live, while a screenshot is a local file its owner can edit or discard.
+//
 // Replaces upstream `ext-toplevel`; do not load both.
 
 #include <wayfire/core.hpp>
 #include <wayfire/plugin.hpp>
 #include <wayfire/render.hpp>
 #include <wayfire/scene.hpp>
+#include <wayfire/scene-operations.hpp>
 #include <wayfire/scene-render.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/toplevel-view.hpp>
@@ -66,6 +77,11 @@ extern "C"
 #include "viewer-pass.hpp"
 
 namespace sc = wf::security_context;
+
+// Above zero while a PERSONAL screen share is collecting or drawing its
+// frame: enclave windows then draw as black (veil_node_t, below). The
+// output's own draw lists are made at other times, so the screen is untouched.
+static int personal_pass = 0;
 
 class view_source_t;
 
@@ -106,6 +122,9 @@ class view_source_t
   public:
     source_wrap_t wrap;
     wayfire_toplevel_view view;
+    // An enclave window asked for by a personal client: frames are black at
+    // the window's size, and the window's own content is never drawn.
+    bool veiled = false;
     // Frames are rendered straight into this swapchain's buffers, which are
     // what the copy-capture session copies from (GPU to GPU for a dmabuf
     // client). Recreated at each size change.
@@ -132,7 +151,7 @@ class view_source_t
         }
     };
 
-    explicit view_source_t(wayfire_toplevel_view view);
+    view_source_t(wayfire_toplevel_view view, bool veiled);
     ~view_source_t();
 
     // Render instances kept alive for their DAMAGE callback: a window keeps
@@ -140,8 +159,13 @@ class view_source_t
     void regen()
     {
         instances.clear();
-        view->get_surface_root_node()->gen_render_instances(instances,
-            [=] (const wf::regionf_t&) { mark_dirty(); }, view->get_output());
+        if (!veiled)
+        {
+            view->get_surface_root_node()->gen_render_instances(instances,
+                [=] (const wf::regionf_t&) { mark_dirty(); },
+                view->get_output());
+        }
+
         mark_dirty();
     }
 
@@ -243,7 +267,8 @@ static const wlr_ext_image_capture_source_v1_interface source_impl = {
     .get_pointer_cursor = nullptr,
 };
 
-view_source_t::view_source_t(wayfire_toplevel_view view) : view(view)
+view_source_t::view_source_t(wayfire_toplevel_view view, bool veiled) :
+    view(view), veiled(veiled)
 {
     wrap.self = this;
     wlr_ext_image_capture_source_v1_init(&wrap.base, &source_impl);
@@ -329,7 +354,8 @@ void view_source_t::produce_frame()
     target.geometry = box;
     target.scale    = scale;
     wf::render_pass_params_t params;
-    params.background_color = {0, 0, 0, 0};
+    params.background_color = veiled ? wf::color_t{0, 0, 0, 1} :
+        wf::color_t{0, 0, 0, 0};
     params.damage    = box;
     params.target    = target;
     params.instances = &instances;
@@ -394,13 +420,18 @@ class screen_source_t
   public:
     screen_wrap_t wrap;
     wf::output_t *output;
+    // The instance this screen is drawn for, or empty for the PERSONAL
+    // screen: the whole output as it is shown, with every enclave window
+    // drawn black where it sits (veil_node_t).
     std::string instance;
     wlr_swapchain *swapchain = nullptr;
-    // One draw list per window, each in its own parent's coordinates.
+    // One draw list per window, each in its own parent's coordinates; the
+    // personal screen has one, the whole scene, in layout coordinates.
     struct layer_t
     {
         wf::scene::node_ptr root;
         std::vector<wf::scene::render_instance_uptr> instances;
+        bool layout = false;
     };
     std::vector<layer_t> layers;
     int started   = 0;
@@ -438,10 +469,28 @@ class screen_source_t
     // The draw lists, bottom to top: this instance's windows in stacking
     // order (a child dialog comes with its parent's subtree, so only roots),
     // then its top-level popups, which live in the output's unmanaged layer.
+    bool personal() const
+    {
+        return instance.empty();
+    }
+
     void regen()
     {
         layers.clear();
         viewer_pass->depth++;
+        if (personal())
+        {
+            personal_pass++;
+            layer_t layer;
+            layer.layout = true;
+            wf::get_core().scene()->gen_render_instances(layer.instances,
+                [=] (const wf::regionf_t&) { mark_dirty(); }, output);
+            layers.push_back(std::move(layer));
+            personal_pass--;
+            viewer_pass->depth--;
+            return;
+        }
+
         auto add = [&] (wayfire_view view)
         {
             layer_t layer;
@@ -631,12 +680,13 @@ void screen_source_t::produce_frame()
     // Black first, even with no window to draw: an empty screen is a valid
     // frame, and a stale buffer would show the previous one.
     auto pass = [&] (std::vector<wf::scene::render_instance_uptr> *instances,
-                     wf::scene::node_ptr root)
+                     wf::scene::node_ptr root, bool layout)
     {
         auto origin = (root && root->parent()) ?
             root->parent()->to_global({0, 0}) : out_origin;
-        wf::geometry_t box{og.x + (int)(out_origin.x - origin.x),
-            og.y + (int)(out_origin.y - origin.y), og.width, og.height};
+        wf::geometry_t box = layout ? output->get_layout_geometry() :
+            wf::geometry_t{og.x + (int)(out_origin.x - origin.x),
+                og.y + (int)(out_origin.y - origin.y), og.width, og.height};
         wf::render_target_t target{wf::render_buffer_t(buffer,
             {(int)wrap.base.width, (int)wrap.base.height})};
         target.geometry = box;
@@ -652,11 +702,16 @@ void screen_source_t::produce_frame()
         wf::render_pass_t::run(params);
         first = false;
     };
-    pass(nullptr, nullptr);
+    // The veils draw only while this is raised, so it covers the drawing as
+    // well as regen(): an instance made outside it would draw the window.
+    personal_pass += personal() ? 1 : 0;
+    pass(nullptr, nullptr, false);
     for (auto& layer : layers)
     {
-        pass(&layer.instances, layer.root);
+        pass(&layer.instances, layer.root, layer.layout);
     }
+
+    personal_pass -= personal() ? 1 : 0;
 
 
     if (with_cursors > 0)
@@ -694,8 +749,9 @@ void screen_source_t::draw_pointer(wlr_buffer *buffer)
         return;
     }
 
+    // The personal screen draws it wherever it is: it is that person's own.
     auto view = wf::get_core().get_view_at(at);
-    if (!view || !belongs(view))
+    if (!personal() && (!view || !belongs(view)))
     {
         return;
     }
@@ -757,11 +813,12 @@ static void screen_manager_create_source(wl_client *client,
     auto wlr = wlr_output_from_resource(output_resource);
     auto requester = sc::lookup_client(client);
     auto out = wlr ? wf::get_core().output_layout->find_output(wlr) : nullptr;
-    // The filter shows this global to its own instance only; this is the
+    // The filter shows an instance's global to that instance only, and the
+    // personal one (empty instance) to unsandboxed clients only; this is the
     // second wall. A refused or vanished output gets an inert source.
-    screen_source_t *source = (mgr && out && requester &&
-        (requester->instance_id == mgr->instance)) ? mgr->source_for(out) :
-        nullptr;
+    bool mine = mgr && (mgr->instance.empty() ? !requester :
+        (requester && (requester->instance_id == mgr->instance)));
+    screen_source_t *source = (mine && out) ? mgr->source_for(out) : nullptr;
     if (!source)
     {
         LOGW("toplevel-capture: refused a screen capture request",
@@ -799,6 +856,118 @@ static void screen_manager_bind(wl_client *client, void *data, uint32_t version,
         nullptr);
 }
 
+// The VEIL over an enclave view: a node in front of everything the view
+// draws, which draws an opaque black box over it in a PERSONAL screen share
+// (personal_pass) and nothing anywhere else, the output included. So a
+// personal share shows where an enclave window is and none of what is in it:
+// its content, decorations and shadow alike, and anything personal stacked
+// above it still draws above the box. A popup gets its own, since it is a
+// view of its own.
+class veil_node_t : public wf::scene::node_t
+{
+    std::weak_ptr<wf::view_interface_t> view;
+
+  public:
+    explicit veil_node_t(wayfire_view view) : node_t(false)
+    {
+        this->view = view->shared_from_this();
+    }
+
+    std::string stringify() const override
+    {
+        return "toplevel-capture veil";
+    }
+
+    // In the coordinates of the surface root, our parent. A window: its whole
+    // geometry (decorations and any drawn shadow). Anything else: what its
+    // other children cover.
+    wf::geometry_t get_bounding_box() override
+    {
+        auto v = view.lock();
+        if (!v || !v->is_mapped())
+        {
+            return {0, 0, 0, 0};
+        }
+
+        if (auto toplevel = wf::toplevel_cast(wayfire_view{v.get()}))
+        {
+            auto g = toplevel->get_geometry();
+            auto o = v->get_surface_root_node()->to_global({0, 0});
+            return wf::geometry_t{g.x - o.x, g.y - o.y, g.width, g.height};
+        }
+
+        wf::regionf_t all;
+        if (auto p = parent())
+        {
+            for (auto& child : p->get_children())
+            {
+                if (child.get() != this)
+                {
+                    all |= child->get_bounding_box();
+                }
+            }
+        }
+
+        if (all.empty())
+        {
+            return {0, 0, 0, 0};
+        }
+
+        auto e = all.get_extents();
+        return {e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1};
+    }
+
+    class render_instance_t : public wf::scene::render_instance_t
+    {
+        std::shared_ptr<veil_node_t> self;
+
+      public:
+        explicit render_instance_t(veil_node_t *self)
+        {
+            this->self = std::dynamic_pointer_cast<veil_node_t>(
+                self->shared_from_this());
+        }
+
+        void schedule_instructions(
+            std::vector<wf::scene::render_instruction_t>& instructions,
+            const wf::render_target_t& target, wf::regionf_t& damage) override
+        {
+            wf::regionf_t ours = damage & self->get_bounding_box();
+            if (!ours.empty())
+            {
+                instructions.push_back(wf::scene::render_instruction_t{
+                    .instance = this,
+                    .target   = target,
+                    .damage   = std::move(ours),
+                });
+            }
+        }
+
+        void render(const wf::scene::render_instruction_t& data) override
+        {
+            data.pass->add_rect({0, 0, 0, 1}, data.target,
+                self->get_bounding_box(), data.damage);
+        }
+    };
+
+    void gen_render_instances(
+        std::vector<wf::scene::render_instance_uptr>& instances,
+        wf::scene::damage_callback, wf::output_t*) override
+    {
+        if (personal_pass > 0)
+        {
+            instances.push_back(std::make_unique<render_instance_t>(this));
+        }
+    }
+};
+
+struct veil_data_t : public wf::custom_data_t
+{
+    std::shared_ptr<veil_node_t> node;
+};
+
+const char *const VEIL_DATA = "toplevel-capture-veil";
+
 // Per window: its handles in the lists it belongs to, and its source.
 struct toplevel_record_t : public wf::custom_data_t
 {
@@ -807,10 +976,13 @@ struct toplevel_record_t : public wf::custom_data_t
     wlr_ext_foreign_toplevel_handle_v1 *personal = nullptr;
     wlr_ext_foreign_toplevel_handle_v1 *enclave  = nullptr;
     std::unique_ptr<view_source_t> source;
+    // For a personal client asking for an enclave window: black frames.
+    std::unique_ptr<view_source_t> veiled;
 
     ~toplevel_record_t()
     {
         source.reset();
+        veiled.reset();
         for (auto h : {personal, enclave})
         {
             if (h)
@@ -850,6 +1022,11 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     std::map<std::string, std::unique_ptr<screen_manager_t>> screen_managers;
     std::map<std::pair<std::string, wf::output_t*>,
         std::unique_ptr<screen_source_t>> screens;
+    // The PERSONAL screen manager, shown to unsandboxed clients in place of
+    // wayfire core's, which is hidden from everyone: a personal screen share
+    // draws enclave windows black. Kept out of screen_managers, which holds
+    // the instance-scoped ones only.
+    std::unique_ptr<screen_manager_t> personal_screens;
 
     screen_source_t *screen_for(const std::string& instance, wf::output_t *out)
     {
@@ -944,10 +1121,17 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
             return ctx && (ctx->instance_id == *owner);
         }
 
+        if (personal_screens && (global == personal_screens->global))
+        {
+            return !sc::lookup_client(client);
+        }
+
+        // Core's draws the screen as it is, enclave windows and all, so no
+        // client sees it: an enclave gets its own, a person the veiled one.
         auto real = wf::get_core().protocols.output_image_capture_source;
         if (real && (global == real->global))
         {
-            return !sc::lookup_client(client);
+            return false;
         }
 
         if (std::string(wl_global_get_interface(global)->name) !=
@@ -1019,6 +1203,32 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
 
     void handle_request(void *data);
 
+    void veil(wayfire_view view)
+    {
+        if (view->has_data(VEIL_DATA) || !sc::lookup_client(view->get_client()))
+        {
+            return;
+        }
+
+        auto data  = std::make_unique<veil_data_t>();
+        data->node = std::make_shared<veil_node_t>(view);
+        wf::scene::add_front(view->get_surface_root_node(), data->node);
+        view->store_data(std::move(data), VEIL_DATA);
+    }
+
+    void unveil(wayfire_view view)
+    {
+        if (auto d = view->get_data<veil_data_t>(VEIL_DATA))
+        {
+            if (d->node->parent())
+            {
+                wf::scene::remove_child(d->node);
+            }
+
+            view->erase_data(VEIL_DATA);
+        }
+    }
+
     wf::signal::connection_t<sc::context_committed_signal> on_committed =
         [=] (sc::context_committed_signal *ev)
     {
@@ -1026,12 +1236,17 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
         screen_manager(ev->info.instance_id);
     };
     wf::signal::connection_t<wf::view_mapped_signal> on_mapped =
-        [=] (wf::view_mapped_signal *ev) { track(ev->view); };
+        [=] (wf::view_mapped_signal *ev)
+    {
+        track(ev->view);
+        veil(ev->view);
+    };
     wf::signal::connection_t<wf::view_unmapped_signal> on_unmapped =
         [=] (wf::view_unmapped_signal *ev)
     {
         ev->view->erase_data(wf::toplevel_identifier::DATA_NAME);
         ev->view->erase_data(RECORD_DATA);
+        unveil(ev->view);
     };
     wf::signal::connection_t<wf::view_title_changed_signal> on_title =
         [=] (wf::view_title_changed_signal *ev) { update(ev->view); };
@@ -1057,6 +1272,16 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
                 display, 1);
         on_new_request.set_callback([=] (void *data) { handle_request(data); });
         on_new_request.connect(&manager->events.new_request);
+        // Before the filter exists, so it is never shown unfiltered: wayland
+        // filters at each advertisement, and there is no client yet anyway.
+        personal_screens = std::make_unique<screen_manager_t>();
+        personal_screens->source_for = [=] (wf::output_t *out)
+        {
+            return screen_for("", out);
+        };
+        personal_screens->global = wl_global_create(display,
+            &ext_output_image_capture_source_manager_v1_interface, 1,
+            personal_screens.get(), screen_manager_bind);
 
         filter = wf::get_core().create_global_filter();
         filter->set_filter([=] (const wl_client *c, const wl_global *g)
@@ -1086,6 +1311,7 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
             if (view->is_mapped())
             {
                 track(view);
+                veil(view);
             }
         }
     }
@@ -1124,13 +1350,17 @@ void wayfire_toplevel_capture::handle_request(void *data)
         return;
     }
 
-    if (!rec->source)
+    // A person asking for an enclave window gets it black: the personal list
+    // names every window (usher identifies them by it), so it can be asked.
+    auto& slot = (!requester && rec->ctx) ? rec->veiled : rec->source;
+    if (!slot)
     {
-        rec->source = std::make_unique<view_source_t>(rec->view);
+        slot = std::make_unique<view_source_t>(rec->view,
+            &slot == &rec->veiled);
     }
 
     wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(req,
-        &rec->source->wrap.base);
+        &slot->wrap.base);
 }
 
 DECLARE_WAYFIRE_PLUGIN(wayfire_toplevel_capture);

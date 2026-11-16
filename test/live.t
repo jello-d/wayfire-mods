@@ -33,13 +33,16 @@
 #                   instance's windows while a plain client's holds all; it
 #                   captures its own window's real pixels, cannot even name a
 #                   personal one, and keeps streaming a window that is
-#                   entirely off-screen (stock has no such plugin)
+#                   entirely off-screen; a plain client asking for an enclave
+#                   window gets it BLACK (stock has no such plugin)
 #   screen-capture  an enclave's SCREEN share, through its own socket: one
 #                   screen-capture global (its own; the allowlist never names
 #                   the protocol), its window drawn WHOLE where a personal one
 #                   covers it, no personal pixel, no enclave mark, and the
 #                   window's decorations exactly as on screen; the plain
-#                   socket gets the real screen (stock has no such source)
+#                   socket gets the screen with every enclave window drawn
+#                   BLACK (content, decorations and mark), a personal window
+#                   above one still drawn over it (stock has no such source)
 #   xdpw-window-only the patched portal-wlr, on a private bus with a private
 #                   pipewire: through the SANDBOX socket it starts, offers
 #                   screens and windows (3; windows only, 2, where the
@@ -627,6 +630,7 @@ check_toplevel_capture() {
   _all=$(capture_as "$WLD" list | tr '\n' ' ')
   _own=$(capture_as "$S/ctx.sock" capture wfm-tick)
   _foreign=$(capture_as "$S/ctx.sock" capture wfm-foot)
+  _veiled=$(capture_as "$WLD" capture wfm-tick)
   place "$(printf '%s\n' "$_t" | jpy "d['id']")" 5000 5000 400 300
   sleep 0.5
   _stream=$(capture_as "$S/ctx.sock" stream wfm-tick 3)
@@ -639,6 +643,7 @@ check_toplevel_capture() {
   # Only the resizer: a bare `wait` also waits for wayfire and every client.
   wait "$_rz"
   _detail="sandbox lists [$_mine]; own [$_own]; foreign [$_foreign];"
+  _detail="$_detail personal asks for it [$_veiled];"
   _detail="$_detail off-screen [$_stream]; resized mid-stream [$_resize]"
   _ok=0
   has "$_mine" "toplevel wfm-foot" && _ok=1        # a personal window leaked
@@ -648,6 +653,7 @@ check_toplevel_capture() {
   has "$_all" "toplevel wfm-tick" || _ok=1
   case $_own in "captured "*" 0 255 0") ;; *) _ok=1 ;; esac
   [ "$_foreign" = "not found" ] || _ok=1
+  case $_veiled in "captured "*" 0 0 0") ;; *) _ok=1 ;; esac
   # retries 0: a session opened AFTER the move must be told the new size
   [ "$_stream" = "streamed 3 retries 0" ] || _ok=1
   [ "$_resize" = "streamed 10 retries 1" ] || _ok=1
@@ -662,7 +668,8 @@ XDPW=${WFM_LIVE_XDPW:-$P/libexec/xdg-desktop-portal-wlr}
 # (its own: the allowlist never names the protocol), an enclave window drawn
 # WHOLE where a personal one covers it, no personal pixel and no enclave mark,
 # and the window's decorations exactly as on screen. Through the personal
-# socket, the real screen, mark and all.
+# socket, the screen with the enclave window BLACK (titlebar and mark too),
+# the personal window above it still drawn over it.
 check_screen_capture() {
   for _v in wfm-foot wfm-enclave; do
     _i=$(wait_view "v['app-id'] == '$_v'" | jpy "d['id']") &&
@@ -682,27 +689,30 @@ check_screen_capture() {
   place "$(printf '%s\n' "$_b" | jpy "d['id']")" 100 150 500 400
   place "$(printf '%s\n' "$_r" | jpy "d['id']")" 350 300 500 400
   sleep 1
-  # 450,450 is under BOTH (red on top); 300,160 is the blue window's titlebar.
+  # 450,450 is under BOTH (red on top); 300,160 is the blue window's titlebar;
+  # 200,300 is blue only.
   _en=$(capture_as "$S/ctx.sock" screen HEADLESS-1 450,450 300,160 \
+    200,300 | tr '\n' ' ')
+  _pe=$(capture_as "$WLD" screen HEADLESS-1 450,450 300,160 200,300 \
     | tr '\n' ' ')
-  _pe=$(capture_as "$WLD" screen HEADLESS-1 450,450 300,160 | tr '\n' ' ')
   _cnt() { printf '%s\n' "$1" | sed -n "s/.* $2 \([0-9]*\) .*/\1/p"; }
   _px() { printf '%s\n' "$1" |
     sed -n "s/.*at $2 \([0-9]* [0-9]* [0-9]*\).*/\1/p"; }
   _ok=0
   has "$_en" "managers 1 " || _ok=1                # its own, and only that
-  has "$_pe" "managers 1 " || _ok=1                # the real one only
+  has "$_pe" "managers 1 " || _ok=1                # the veiled one only
   [ "$(_cnt "$_en" red)" = 0 ] || _ok=1            # nothing personal
   [ "$(_cnt "$_en" magenta)" = 0 ] || _ok=1        # no enclave mark
-  [ "$(_cnt "$_pe" magenta)" -gt 0 ] 2>/dev/null || _ok=1  # mark on screen
-  [ "$(_cnt "$_pe" red)" -gt 0 ] 2>/dev/null || _ok=1
+  [ "$(_cnt "$_pe" red)" -gt 0 ] 2>/dev/null || _ok=1  # personal is drawn
+  [ "$(_cnt "$_pe" blue)" = 0 ] || _ok=1           # no enclave content
+  [ "$(_cnt "$_pe" magenta)" = 0 ] || _ok=1        # nor its mark
   [ "$(_px "$_en" '450 450')" = "0 0 255" ] || _ok=1   # drawn whole
-  [ "$(_px "$_pe" '450 450')" = "255 0 0" ] || _ok=1   # covered on screen
+  [ "$(_px "$_pe" '450 450')" = "255 0 0" ] || _ok=1   # red still above it
+  [ "$(_px "$_en" '200 300')" = "0 0 255" ] || _ok=1
+  [ "$(_px "$_pe" '200 300')" = "0 0 0" ] || _ok=1     # veiled
   _tb=$(_px "$_en" '300 160')
   case $_tb in ''|'0 0 0'|'0 0 255') _ok=1 ;; esac     # a titlebar is drawn
-  [ "$_tb" = "$(_px "$_pe" '300 160')" ] || _ok=1      # exactly as on screen
-  # the blue window is bigger in the share than on screen: it is not covered
-  [ "$(_cnt "$_en" blue)" -gt "$(_cnt "$_pe" blue)" ] 2>/dev/null || _ok=1
+  [ "$(_px "$_pe" '300 160')" = "0 0 0" ] || _ok=1     # and veiled too
   check screen-capture "$_ok" "enclave [$_en]; personal [$_pe]"
 }
 
