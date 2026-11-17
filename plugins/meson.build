@@ -10,7 +10,7 @@ plugindir   = join_paths(get_option('libdir'), 'wayfire')
 
 plugins = ['edge-flipping', 'workspace-wallpaper', 'wsync',
            'directional-focus', 'workarea-guard', 'enclave-mark',
-           'toplevel-capture', 'surface-names', 'edge-warp']
+           'toplevel-capture', 'surface-names', 'edge-warp', 'idle-audit']
 # toplevel-capture serves its own ext_output_image_capture_source_manager_v1
 # (one per enclave), so it needs the protocol's server code, which wlroots
 # keeps private. The capture-source XML refers to the foreign-toplevel handle,
@@ -44,7 +44,8 @@ foreach name : plugins
                   install_dir  : plugindir)
 endforeach
 
-# workarea-guard ships no metadata xml (config-less); the rest do.
+# workarea-guard and idle-audit ship no metadata xml (config-less); the
+# rest do.
 install_data('edge-flipping.xml', 'workspace-wallpaper.xml', 'wsync.xml',
              'directional-focus.xml', 'enclave-mark.xml', 'surface-names.xml',
              'edge-warp.xml',

@@ -34,8 +34,9 @@ rather than by rebasing a divergent tree.
   upstream (no patch).
 - `plugins/`: the custom Wayfire plugins (edge-flipping, edge-warp,
   workspace-wallpaper, wsync, directional-focus, atlas, toplevel-capture, which
-  also gives each enclave a screen share of only its own windows, ...), a
-  self-contained meson project.
+  also gives each enclave a screen share of only its own windows, idle-audit,
+  which names who is holding idle off over IPC, ...), a self-contained meson
+  project.
 - `libexec/build-wayfire`: the whole build recipe (fetch, patch, build in
   dependency order, rpath, incremental stamps).
 

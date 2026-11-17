@@ -110,6 +110,14 @@
 #                   log line names it: its pid, its process name and the
 #                   reason (stock says only "Error sending json to client!",
 #                   which left a dropped event stream unexplained for weeks)
+#   idle-audit      who holds idle off: nothing listed when nothing holds; a
+#                   window's inhibitor named by the client's pid, its view
+#                   and visibility, still listed (not visible) once
+#                   minimized; released on request and on disconnect, each
+#                   logged; one with no window has no view; and wayfire's
+#                   counter up with no client inhibitor (stock idle on a
+#                   fullscreen window) reads inconsistent (stock has no
+#                   such plugin)
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -262,6 +270,23 @@ build_activate() {
     || fail "could not build the activation test client"
 }
 
+# build_inhibit: test/live-inhibit.c, a client that takes an idle inhibitor
+build_inhibit() {
+  _d=$(pkg-config --variable=pkgdatadir wayland-protocols)
+  for _x in "$_d/stable/xdg-shell/xdg-shell.xml" \
+            "$_d/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml"; do
+    [ -f "$_x" ] || skip "needs $_x"
+    _n=$(basename "$_x" .xml)
+    wayland-scanner client-header "$_x" "$T/$_n-client-protocol.h"
+    wayland-scanner private-code "$_x" "$T/$_n-protocol.c"
+  done
+  # shellcheck disable=SC2046  # pkg-config output is a word list
+  cc -o "$T/inhibit" "$HERE/test/live-inhibit.c" \
+    "$T/xdg-shell-protocol.c" "$T/idle-inhibit-unstable-v1-protocol.c" \
+    -I"$T" $(pkg-config --cflags --libs wayland-client) \
+    || fail "could not build the idle-inhibit test client"
+}
+
 # build_failtest: test/live-failtest.c as a preload, against the wlroots
 # headers of the prefix under test (it reads struct wlr_output's name)
 build_failtest() {
@@ -291,6 +316,7 @@ write_fixtures() {
   build_capture
   build_pwconsume
   build_activate
+  build_inhibit
   build_failtest
   printf '[csd]\npreferred=server\n' > "$T/foot.ini"
   python3 -I -c 'import sys; sys.stdout.buffer.write(
@@ -1289,6 +1315,118 @@ SLOWPY
   _live_stop
 }
 
+# --- idle-audit: who is holding idle off -----------------------------------
+# A session of its own, because it loads stock `idle`, whose fullscreen
+# inhibitor is the one real way to make wayfire's private counter disagree
+# with the client inhibitors wlroots lists: inhibited, with nobody holding it.
+# On this fleet `idle` is not loaded, so in production that reading means a
+# counter that has drifted, which is the wayfire bug the plugin exists to name.
+audit() { ipc idle-audit/list; }
+session_idleaudit() {
+  printf '%s\n' '[core]' \
+    'plugins = ipc ipc-rules wm-actions idle idle-audit' \
+    'xwayland = false' '' '[idle]' 'screensaver_timeout = -1' \
+    'dpms_timeout = -1' 'disable_on_fullscreen = true' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' > "$T/idleaudit.ini"
+  start_wayfire "$T/s9" "$T/idleaudit.ini" 1
+  _a=$(audit 2>&1)
+  case $_a in
+    *'"inhibited": false'*'"consistent": true'*'"inhibitors": []'*)
+      check idle-audit-empty 0 "nothing held, nothing listed" ;;
+    *) check idle-audit-empty 1 "with no client: $_a" ;;
+  esac
+
+  # A window that takes one, driven over a FIFO so the test decides when it
+  # releases. `exec` keeps $! the client itself, so its pid is the one the
+  # compositor must report.
+  mkfifo "$S/inh.fifo" "$S/bare.fifo"
+  client inh sh -c "exec '$T/inhibit' window wfm-inhibit < '$S/inh.fifo'"
+  _ip=$!; ACT_PIDS="$ACT_PIDS $_ip"
+  exec 7> "$S/inh.fifo"
+  _v=$(wait_view "v['app-id'] == 'wfm-inhibit'") \
+    || { check idle-audit-holder 1 "the inhibiting window never mapped"
+         exec 7>&-; _live_stop; return; }
+  _vid=$(printf '%s' "$_v" | jpy "d['id']")
+  sleep 0.5
+  _a=$(audit 2>&1)
+  _got=$(printf '%s' "$_a" | jpy "' '.join(str(x) for x in (
+    d['inhibited'], d['consistent'], len(d['inhibitors']),
+    d['inhibitors'][0]['pid'], d['inhibitors'][0]['view-id'],
+    d['inhibitors'][0]['app-id'], d['inhibitors'][0]['visible'],
+    d['inhibitors'][0]['since'] is not None))" 2>&1)
+  if [ "$_got" = "True True 1 $_ip $_vid wfm-inhibit True True" ]; then
+    check idle-audit-holder 0 "pid $_ip, view $_vid, visible, timed"
+  else
+    check idle-audit-holder 1 "want 'True True 1 $_ip $_vid wfm-inhibit True
+    True', got '$_got' from: $_a"
+  fi
+
+  ipc wm-actions/set-minimized "{\"view_id\": $_vid, \"state\": true}" \
+    > /dev/null 2>&1
+  sleep 0.3
+  _got=$(audit | jpy "' '.join(str(x) for x in (d['inhibited'],
+    d['inhibitors'][0]['minimized'], d['inhibitors'][0]['visible'])) \
+    if d['inhibitors'] else 'none'" 2>&1)
+  if [ "$_got" = "True True False" ]; then
+    check idle-audit-hidden 0 "a minimized holder still inhibits, not visible"
+  else
+    check idle-audit-hidden 1 "want 'True True False', got '$_got'"
+  fi
+
+  echo release >&7
+  sleep 0.5
+  _a=$(audit 2>&1)
+  case $_a in
+    *'"inhibited": false'*'"inhibitors": []'*)
+      if grep -q "inhibitor released by pid $_ip (" "$S/wf.log"; then
+        check idle-audit-release 0 "released, and the log names pid $_ip"
+      else
+        check idle-audit-release 1 "released, but no log line names $_ip"
+      fi ;;
+    *) check idle-audit-release 1 "after release: $_a" ;;
+  esac
+
+  # One with no window behind it, then the client killed while it holds:
+  # disconnecting must release it, which is what rules out a dead pid's
+  # inhibitor lingering.
+  client bare sh -c "exec '$T/inhibit' bare < '$S/bare.fifo'"
+  _bp=$!; ACT_PIDS="$ACT_PIDS $_bp"
+  exec 8> "$S/bare.fifo"
+  sleep 0.8
+  _got=$(audit | jpy "' '.join(str(x) for x in (len(d['inhibitors']),
+    d['inhibitors'][0]['pid'] if d['inhibitors'] else 0,
+    d['inhibitors'][0]['view-id'] if d['inhibitors'] else 0))" 2>&1)
+  if [ "$_got" = "1 $_bp None" ]; then
+    check idle-audit-bare 0 "a surface with no window: pid $_bp, view null"
+  else
+    check idle-audit-bare 1 "want '1 $_bp None', got '$_got'"
+  fi
+  kill "$_bp" 2>/dev/null
+  sleep 0.5
+  case $(audit 2>&1) in
+    *'"inhibitors": []'*) check idle-audit-disconnect 0 "killed, released" ;;
+    *) check idle-audit-disconnect 1 "a killed client's inhibitor stayed" ;;
+  esac
+  exec 8>&-
+
+  # wayfire's counter up with no client inhibitor anywhere: stock idle's
+  # fullscreen inhibitor, on the window that no longer holds one.
+  ipc wm-actions/set-minimized "{\"view_id\": $_vid, \"state\": false}" \
+    > /dev/null 2>&1
+  ipc wm-actions/set-fullscreen "{\"view_id\": $_vid, \"state\": true}" \
+    > /dev/null 2>&1
+  sleep 0.5
+  _a=$(audit 2>&1)
+  case $_a in
+    *'"inhibited": true'*'"consistent": false'*'"inhibitors": []'*)
+      check idle-audit-drift 0 "inhibited with no client holding: flagged" ;;
+    *) check idle-audit-drift 1 "fullscreen under stock idle: $_a" ;;
+  esac
+  exec 7>&-
+  alive || died idle-audit
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
@@ -1299,5 +1437,6 @@ session_warp
 session_backoff
 session_unplug
 session_ipcname
+session_idleaudit
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

@@ -194,6 +194,7 @@ do_check() {
   # key components: our custom plugin + the patched satellites + the tools.
   for _c in "$LIBDIR/wayfire/libedge-flipping.so:custom plugins" \
             "$LIBDIR/wayfire/libedge-warp.so:edge-warp" \
+            "$LIBDIR/wayfire/libidle-audit.so:idle-audit" \
             "$LIBDIR/wayfire/libpixdecor.so:pixdecor" \
             "$LIBDIR/wayfire/libfilters.so:filters" \
             "$WF_PREFIX/bin/wcm:wcm" "$WF_PREFIX/bin/wf-info:wf-info"; do
