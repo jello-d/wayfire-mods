@@ -38,13 +38,23 @@
 // its window is visible, which the protocol permits; `visible` is reported so
 // that question can be asked rather than assumed.
 //
-// AN ENCLAVE CLIENT'S pid IS ITS PROXY's: severance-display relays the
-// enclave's Wayland traffic, so the credentials wayfire sees are the proxy's.
-// The window's app-id and title still name the application, and
-// window-rules/view-info on `view-id` carries its security context.
+// AN ENCLAVE CLIENT'S pid IS ITS OWN. Measured on dragonfly (2026-11-16,
+// tackup TW1): titan's Chrome reached wayfire directly through its
+// security-context socket, so wayfire saw Chrome's own pid under the enclave's
+// uid. An earlier version of this comment said the pid was a relay's
+// (severance-display); that was never measured. Were a relay ever in the
+// path, the pid here would be the relay's, and window-rules/view-info on
+// `view-id` carries the security context either way.
+//
+// IT ALSO MARKS THE HOLDER, for the eye rather than for IPC: each toplevel
+// holding an inhibitor carries a count (idle-holder.hpp) and a signal goes
+// out on every change, which enclave-mark turns into a halo on the window.
+// An inhibitor taken on a surface before its window maps is counted when the
+// window maps.
 
 #include <wayfire/plugin.hpp>
 #include <wayfire/core.hpp>
+#include <wayfire/signal-definitions.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/toplevel-view.hpp>
 #include <wayfire/workspace-set.hpp>
@@ -53,6 +63,7 @@
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/plugins/common/shared-core-data.hpp>
 #include <wayfire/plugins/ipc/ipc-method-repository.hpp>
+#include "idle-holder.hpp"
 
 #include <ctime>
 #include <fstream>
@@ -123,11 +134,66 @@ class idle_audit_t : public wf::plugin_interface_t
     time_t since;
     identity_t id;
     std::unique_ptr<wf::wl_listener_wrapper> on_destroy;
+    // The window this inhibitor is counted on, once it has one.
+    std::weak_ptr<wf::view_interface_t> counted;
   };
   std::map<wlr_idle_inhibitor_v1*, tracked_t> tracked;
   // A listener cannot be freed from inside its own callback, so a released
   // inhibitor's listener waits here until the next call into the plugin.
   std::vector<std::unique_ptr<wf::wl_listener_wrapper>> graveyard;
+
+  static void announce(wayfire_view v)
+  {
+    wf::idle_holder::changed_signal ev;
+    ev.view = v;
+    wf::get_core().emit(&ev);
+  }
+
+  // Count `inh` on its window, if it has one and is not counted yet.
+  static void count_on(tracked_t& t, wlr_idle_inhibitor_v1 *inh)
+  {
+    if (!t.counted.expired())
+    {
+      return;
+    }
+
+    auto v = view_of(inh);
+    if (!v)
+    {
+      return;
+    }
+
+    auto d = v->get_data_safe<wf::idle_holder::holder_t>(
+      wf::idle_holder::DATA_NAME);
+    t.counted = v->shared_from_this();
+    if (++d->count == 1)
+    {
+      announce(v);
+    }
+  }
+
+  static void uncount(tracked_t& t)
+  {
+    auto v = t.counted.lock();
+    t.counted.reset();
+    auto d = v ? v->get_data<wf::idle_holder::holder_t>(
+      wf::idle_holder::DATA_NAME) : nullptr;
+    if (d && (--d->count <= 0))
+    {
+      v->erase_data(wf::idle_holder::DATA_NAME);
+      announce(wayfire_view{v.get()});
+    }
+  }
+
+  // A surface can take an inhibitor before its window maps.
+  wf::signal::connection_t<wf::view_mapped_signal> on_mapped =
+    [this] (wf::view_mapped_signal*)
+  {
+    for (auto& [inh, t] : tracked)
+    {
+      count_on(t, inh);
+    }
+  };
 
   void track(wlr_idle_inhibitor_v1 *inh, time_t since)
   {
@@ -148,11 +214,13 @@ class idle_audit_t : public wf::plugin_interface_t
         " (", it->second.id.comm, ")", it->second.since ?
         ", held " + std::to_string(time(nullptr) - it->second.since) + "s" :
         std::string(", taken before idle-audit loaded"));
+      uncount(it->second);
       it->second.on_destroy->disconnect();
       graveyard.push_back(std::move(it->second.on_destroy));
       tracked.erase(it);
     });
     t.on_destroy->connect(&inh->events.destroy);
+    count_on(t, inh);
   }
 
   wf::json_t describe(wlr_idle_inhibitor_v1 *inh)
@@ -238,6 +306,7 @@ class idle_audit_t : public wf::plugin_interface_t
         ") uid ", id.uid, " app-id '", v ? v->get_app_id() : "", "'");
     });
     on_new.connect(&mgr->events.new_inhibitor);
+    wf::get_core().connect(&on_mapped);
     ipc->register_method("idle-audit/list", list);
   }
 
@@ -245,6 +314,13 @@ class idle_audit_t : public wf::plugin_interface_t
   {
     ipc->unregister_method("idle-audit/list");
     on_new.disconnect();
+    // Unmark every holder: the marks are only true while this plugin counts.
+    for (auto& [inh, t] : tracked)
+    {
+      uncount(t);
+      t.on_destroy->disconnect();
+    }
+
     tracked.clear();
   }
 };

@@ -5,6 +5,9 @@
  *   live-inhibit window <app_id>  map a window, take an inhibitor on it
  *   live-inhibit bare             take one on a surface with no role, so
  *                                 there is no window behind it at all
+ *   live-inhibit early <app_id>   take one on the bare surface FIRST, then
+ *                                 map it as a window: the holder has no
+ *                                 window when it is taken, only later
  *
  * Prints "inhibiting" once the request has reached the compositor. Each stdin
  * line "release" destroys the inhibitor (the window stays) and prints
@@ -57,10 +60,11 @@ static void ping(void *d, struct xdg_wm_base *b, uint32_t serial)
 
 static const struct xdg_wm_base_listener wm_base_listener = { ping };
 
-/* A 64x64 opaque shm buffer: enough for the window to map. */
+/* A 300x200 opaque shm buffer: enough to map, and wide enough that
+ * enclave-mark's name tab and awake tab both fit above it. */
 static struct wl_buffer *solid_buffer(void)
 {
-  int w = 64, h = 64, stride = w * 4, size = stride * h;
+  int w = 300, h = 200, stride = w * 4, size = stride * h;
   int fd = memfd_create("live-inhibit", MFD_CLOEXEC);
   if (fd < 0 || ftruncate(fd, size) < 0)
     return NULL;
@@ -105,8 +109,10 @@ static void map_window(struct wl_display *display, const char *app_id)
 int main(int argc, char **argv)
 {
   int window = argc >= 3 && !strcmp(argv[1], "window");
-  if (!window && !(argc >= 2 && !strcmp(argv[1], "bare"))) {
-    fprintf(stderr, "usage: live-inhibit window <app_id> | bare\n");
+  int early  = argc >= 3 && !strcmp(argv[1], "early");
+  if (!window && !early && !(argc >= 2 && !strcmp(argv[1], "bare"))) {
+    fprintf(stderr,
+            "usage: live-inhibit window <app_id> | early <app_id> | bare\n");
     return 1;
   }
   struct wl_display *display = wl_display_connect(NULL);
@@ -128,6 +134,8 @@ int main(int argc, char **argv)
   struct zwp_idle_inhibitor_v1 *inh =
     zwp_idle_inhibit_manager_v1_create_inhibitor(inhibit_mgr, surface);
   wl_display_roundtrip(display);
+  if (early)
+    map_window(display, argv[2]);
   printf("inhibiting\n");
   fflush(stdout);
 

@@ -118,6 +118,12 @@
 #                   counter up with no client inhibitor (stock idle on a
 #                   fullscreen window) reads inconsistent (stock has no
 #                   such plugin)
+#   idle-awake      the holder is marked on sight (tackup TW1): a plain
+#                   window holding idle off gets the awake frame and tab, and
+#                   loses both on release; an enclave holder KEEPS its
+#                   enclave frame and name tab and gains the awake tab beside
+#                   it; one taken before the window mapped is marked once it
+#                   maps; a fullscreen holder is not marked
 #   activation      xdg-activation across sandbox boundaries, seven cases:
 #                   a token from an enclave activates only its own enclave's
 #                   windows; a personal token activates anything; a token
@@ -1427,6 +1433,161 @@ session_idleaudit() {
   _live_stop
 }
 
+# --- idle-awake: the window holding idle off, marked (tackup TW1) ---------
+# A session of its own: enclave-mark draws the mark, idle-audit counts the
+# holders, and the enclave client may take an inhibitor only because the
+# allowlist here lists the protocol (production's does too). The awake colour
+# is set to pure green so a pixel names it exactly; white is the default.
+AWAKE="0 255 0"
+# awake_strip <view id>: "<green> <magenta>" pixel counts in the strip just
+# above the frame's right end, where the tabs sit (the name tab rightmost,
+# the awake tab to its left). No pixdecor here, so the window box IS the
+# view geometry, and thickness 6 puts the frame's top at y-6.
+awake_strip() {
+  _g=$(ipc window-rules/view-info "{\"id\": $1}" | jpy "'%d %d %d' % (
+    d['info']['geometry']['x'], d['info']['geometry']['y'],
+    d['info']['geometry']['width'])")
+  set -- $_g
+  _ox=$(jpy "[int(o['geometry']['x']) for o in d
+    if o['name'] == 'HEADLESS-1'][0]" < "$S/outputs.json")
+  _oy=$(jpy "[int(o['geometry']['y']) for o in d
+    if o['name'] == 'HEADLESS-1'][0]" < "$S/outputs.json")
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN grim -g \
+    "$((_ox + $1 + $3 + 6 - 160)),$((_oy + $2 - 6 - 12)) 160x12" -t ppm - \
+    | python3 -I -c 'import sys
+d = sys.stdin.buffer.read()
+px = d[d.index(b"255\n") + 4:]
+g = m = 0
+for i in range(0, len(px), 3):
+    p = tuple(px[i:i + 3])
+    if p == (0, 255, 0): g += 1
+    elif p == (255, 0, 255): m += 1
+print(g, m)'
+}
+# awake_edge <view id>: the pixel 3px left of the window, mid-height: inside
+# a 6px frame, the background with none
+awake_edge() {
+  _g=$(ipc window-rules/view-info "{\"id\": $1}" | jpy "'%d %d' % (
+    d['info']['geometry']['x'],
+    d['info']['geometry']['y'] + d['info']['geometry']['height'] // 2)")
+  set -- $_g
+  at $(($1 - 3)) "$2"
+}
+session_awake() {
+  _pl='ipc ipc-rules wm-actions security-context-v1 enclave-mark idle-audit'
+  { printf '%s\n' '[core]' "plugins = $_pl" \
+      'xwayland = false' '' '[security-context-v1]' \
+      "allowed_protocols = $(printf '%s' "$ALLOW zwp_idle_inhibit_manager_v1" \
+        | sed 's/ /, /g')" '' \
+      '[enclave-mark]' 'thickness = 6' 'colors = titan=1.0 0.0 1.0 1.0' \
+      'awake_color = 0.0 1.0 0.0 1.0' '' \
+      '[output:HEADLESS-1]' 'mode = 1280x720@60000'
+  } > "$T/awake.ini"
+  start_wayfire "$T/s10" "$T/awake.ini" 1
+
+  # A PLAIN holder: framed and tabbed in the awake colour, then released.
+  mkfifo "$S/plain.fifo" "$S/enc.fifo" "$S/early.fifo"
+  client plain sh -c "exec '$T/inhibit' window wfm-awake < '$S/plain.fifo'"
+  _pp=$!; ACT_PIDS="$ACT_PIDS $_pp"
+  exec 7> "$S/plain.fifo"
+  _v=$(wait_view "v['app-id'] == 'wfm-awake'") \
+    || { check idle-awake 1 "the plain holder never mapped"
+         exec 7>&-; _live_stop; return; }
+  _pv=$(printf '%s' "$_v" | jpy "d['id']")
+  place "$_pv" 100 150 300 200
+  sleep 0.8
+  _e=$(awake_edge "$_pv"); _s=$(awake_strip "$_pv")
+  # shellcheck disable=SC2086  # "<green> <magenta>"
+  set -- $_s
+  if [ "$_e" = "$AWAKE" ] && [ "$1" -gt 150 ] && [ "$2" = 0 ]; then
+    check idle-awake 0 "plain holder: frame [$_e], tab [$_s]"
+  else
+    check idle-awake 1 "plain holder: frame [$_e] (want [$AWAKE]), tab
+    green/magenta [$_s] (want >150 / 0); $(where "$_pv")"
+  fi
+
+  echo release >&7
+  sleep 0.8
+  _e=$(awake_edge "$_pv"); _s=$(awake_strip "$_pv")
+  # shellcheck disable=SC2086
+  set -- $_s
+  if [ "$_e" != "$AWAKE" ] && [ "$1" = 0 ] \
+    && grep -q "view $_pv released idle" "$S/wf.log"; then
+    check idle-awake-release 0 "unmarked on release: edge [$_e], tab [$_s]"
+  else
+    check idle-awake-release 1 "after release: edge [$_e], tab [$_s], log:
+    $(grep -c 'released idle' "$S/wf.log") release lines"
+  fi
+  exec 7>&-
+
+  # An ENCLAVE holder: its own frame and name tab stay, the awake tab joins.
+  client secctx "$T/secctx" "$S/ctx.sock" titan; SC_PID=$!
+  until_true "grep -q ready '$S/secctx.log'"
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN \
+    sh -c "exec '$T/inhibit' window wfm-awake-enc < '$S/enc.fifo'" \
+    > "$S/enc.log" 2>&1 &
+  _ep=$!; ACT_PIDS="$ACT_PIDS $_ep"
+  exec 8> "$S/enc.fifo"
+  _v=$(wait_view "v['app-id'] == 'wfm-awake-enc'") \
+    || { check idle-awake-enclave 1 "the enclave holder never mapped:
+         $(cat "$S/enc.log")"; exec 8>&-; _live_stop; return; }
+  _ev=$(printf '%s' "$_v" | jpy "d['id']")
+  place "$_ev" 600 150 300 200
+  sleep 0.8
+  _e=$(awake_edge "$_ev"); _s=$(awake_strip "$_ev")
+  # shellcheck disable=SC2086
+  set -- $_s
+  if [ "$_e" = "$MARK" ] && [ "$1" -gt 150 ] && [ "$2" -gt 150 ]; then
+    check idle-awake-enclave 0 "enclave frame kept [$_e], tabs [$_s]"
+  else
+    check idle-awake-enclave 1 "enclave holder: frame [$_e] (want [$MARK]),
+    green/magenta [$_s] (want both >150); $(where "$_ev")"
+  fi
+  echo release >&8
+  sleep 0.8
+  _e=$(awake_edge "$_ev"); _s=$(awake_strip "$_ev")
+  # shellcheck disable=SC2086
+  set -- $_s
+  if [ "$_e" = "$MARK" ] && [ "$1" = 0 ] && [ "$2" -gt 150 ]; then
+    check idle-awake-enclave-release 0 "still the enclave's: [$_e] [$_s]"
+  else
+    check idle-awake-enclave-release 1 "after release: frame [$_e] (want
+    [$MARK]), green/magenta [$_s] (want 0 / >150)"
+  fi
+  exec 8>&-
+
+  # Taken before the surface had a window at all: marked once it maps.
+  client early sh -c "exec '$T/inhibit' early wfm-awake-early \
+    < '$S/early.fifo'"
+  _yp=$!; ACT_PIDS="$ACT_PIDS $_yp"
+  exec 9> "$S/early.fifo"
+  _v=$(wait_view "v['app-id'] == 'wfm-awake-early'") \
+    || { check idle-awake-early 1 "the early holder never mapped"
+         exec 9>&-; _live_stop; return; }
+  _yv=$(printf '%s' "$_v" | jpy "d['id']")
+  place "$_yv" 100 450 300 200
+  sleep 0.8
+  _e=$(awake_edge "$_yv")
+  if [ "$_e" = "$AWAKE" ]; then
+    check idle-awake-early 0 "inhibitor before the window: marked at map"
+  else
+    check idle-awake-early 1 "inhibitor before the window: edge [$_e]"
+  fi
+
+  # Fullscreen: the window being looked at is not marked.
+  place "$_yv" 0 0 1280 720 true
+  sleep 0.8
+  _e=$(at 2 360); _f=$(at 640 2)
+  if [ "$_e" != "$AWAKE" ] && [ "$_f" != "$AWAKE" ]; then
+    check idle-awake-fullscreen 0 "fullscreen holder unmarked: [$_e] [$_f]"
+  else
+    check idle-awake-fullscreen 1 "fullscreen holder marked: [$_e] [$_f]"
+  fi
+  exec 9>&-
+  alive || died idle-awake
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
@@ -1438,5 +1599,6 @@ session_backoff
 session_unplug
 session_ipcname
 session_idleaudit
+session_awake
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

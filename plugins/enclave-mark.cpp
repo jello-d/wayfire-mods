@@ -26,6 +26,19 @@
 //
 // An instance not listed gets a stable colour hashed from its name, so two
 // enclaves always differ and an unlisted sandbox is still marked.
+//
+// AWAKE: a window holding idle off (idle-audit counts holders, through
+// idle-holder.hpp) is marked too, so the one keeping the screen from locking
+// can be found on sight (tackup TW1). ONE OWNER DRAWS EACH WINDOW'S MARK,
+// which is why this lives here rather than in a second plugin stacking a
+// second frame. A plain window gets a frame in `awake_color` and an
+// `awake_label` tab. An enclave window KEEPS its frame, colour and name tab,
+// which are a security signal, and gains the awake tab beside its name.
+// The default awake colour is white, which the hashed palette can never
+// produce (every hashed colour has a channel at 0).
+// NOT WHILE FULLSCREEN: the mark exists to find a window you are not
+// looking at, and the commonest holder is a fullscreen video, which a frame
+// drawn over its edge would only spoil. An enclave's own frame still draws.
 
 #include "viewer-pass.hpp"
 #include <wayfire/core.hpp>
@@ -42,6 +55,7 @@
 #include <wayfire/plugins/common/cairo-util.hpp>
 #include <wayfire/plugins/common/security-context.hpp>
 #include "pixdecor-shadow.hpp"
+#include "idle-holder.hpp"
 #include <cmath>
 #include <map>
 #include <memory>
@@ -97,6 +111,8 @@ struct mark_style_t
     bool label    = true;
     int label_size = 11;
     std::map<std::string, wf::color_t> colors;
+    wf::color_t awake_color{1, 1, 1, 1};
+    std::string awake_label = "awake";
 
     wf::color_t color_for(const std::string& instance) const
     {
@@ -105,11 +121,49 @@ struct mark_style_t
     }
 };
 
+// One text tab, rendered again only when what shapes it changes: the text,
+// its colour, the font size, or the scale it is drawn at (crisp on HiDPI).
+struct tab_t
+{
+    wf::cairo_text_t text;
+    std::string str;
+    wf::color_t color{0, 0, 0, 0};
+    int size    = 0;
+    float scale = 0;
+    wf::dimensions_t px{0, 0};
+
+    void update(const std::string& s, const wf::color_t& c, int sz, float sc)
+    {
+        if ((s == str) && (c == color) && (sz == size) && (sc == scale))
+        {
+            return;
+        }
+
+        // Black or white, whichever reads on the tab colour.
+        double lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+        wf::color_t ink = lum > 0.5 ? wf::color_t{0, 0, 0, 1} :
+            wf::color_t{1, 1, 1, 1};
+        wf::cairo_text_t::params par(sz, c, ink, sc);
+        par.rounded_rect = false;
+        // The texture must BE the tab: without exact_size the helper draws
+        // the text centred on a larger default surface (measured 400x100 for
+        // a 47x22 label), which scaled into the tab box became a dot.
+        par.exact_size = true;
+        px    = text.render_text(s, par);
+        str   = s;
+        color = c;
+        size  = sz;
+        scale = sc;
+    }
+};
+
 class mark_node_t : public wf::scene::node_t
 {
     std::weak_ptr<wf::toplevel_view_interface_t> view;
     const mark_style_t *style;
+    bool enclave;          // in a security context: the frame is its colour
     std::string instance;
+    bool awake = false;    // holding idle off
     wf::geometry_t last_box{0, 0, 0, 0};
 
     // The four corner quarter-rings, when the frame is rounded, rendered for
@@ -119,18 +173,13 @@ class mark_node_t : public wf::scene::node_t
     float corner_key_scale = 0;
     wf::color_t corner_key_c{0, 0, 0, 0};
 
-    // The instance name, rendered at the scale it was last drawn at.
-    wf::cairo_text_t label;
-    float label_scale = 0;
-    wf::color_t label_color{0, 0, 0, 0};
-    int label_size = 0;
-    wf::dimensions_t label_px{0, 0};
+    tab_t name_tab, awake_tab;
     wf::shared_data::ref_ptr_t<wf::enclave_capture::viewer_pass_t> viewer_pass;
 
   public:
     mark_node_t(wayfire_toplevel_view view, const mark_style_t *style,
-        std::string instance) : node_t(false), style(style),
-        instance(std::move(instance))
+        bool enclave, std::string instance) : node_t(false), style(style),
+        enclave(enclave), instance(std::move(instance))
     {
         this->view = std::dynamic_pointer_cast<wf::toplevel_view_interface_t>(
             view->shared_from_this());
@@ -161,11 +210,39 @@ class mark_node_t : public wf::scene::node_t
         return v && v->toplevel()->current().fullscreen;
     }
 
+    bool is_enclave() const
+    {
+        return enclave;
+    }
+
+    void set_awake(bool on)
+    {
+        awake = on;
+        refresh();
+    }
+
+    bool show_awake()
+    {
+        return awake && !fullscreen();
+    }
+
+    // An enclave's frame always; a plain window's only while it is marked
+    // awake.
+    bool has_frame()
+    {
+        return enclave || show_awake();
+    }
+
+    wf::color_t frame_color() const
+    {
+        return enclave ? style->color_for(instance) : style->awake_color;
+    }
+
     // The frame's outer box: outside the window, or ON it when fullscreen.
     wf::geometry_t frame_box()
     {
         auto box = window_box();
-        if (!box)
+        if (!box || !has_frame())
         {
             return {0, 0, 0, 0};
         }
@@ -180,87 +257,82 @@ class mark_node_t : public wf::scene::node_t
             box->height + 2 * t};
     }
 
-    // Render the name if anything that shapes it changed: the scale it is
-    // drawn at (crisp on HiDPI), the instance colour, or the font size.
-    void update_label(float scale)
-    {
-        auto c = style->color_for(instance);
-        if ((scale == label_scale) && (c == label_color) &&
-            (style->label_size == label_size))
-        {
-            return;
-        }
-
-        // Black or white, whichever reads on the instance colour.
-        double lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-        wf::color_t ink = lum > 0.5 ? wf::color_t{0, 0, 0, 1} :
-            wf::color_t{1, 1, 1, 1};
-        wf::cairo_text_t::params par(style->label_size, c, ink, scale);
-        par.rounded_rect = false;
-        // The texture must BE the tab: without exact_size the helper draws
-        // the text centred on a larger default surface (measured 400x100 for
-        // a 47x22 label), which scaled into the tab box became a dot.
-        par.exact_size = true;
-        label_px    = label.render_text(instance.empty() ? "sandbox" : instance,
-            par);
-        label_scale = scale;
-        label_color = c;
-        label_size  = style->label_size;
-    }
-
     float output_scale()
     {
         auto v = view.lock();
         return (v && v->get_output()) ? v->get_output()->handle->scale : 1.0;
     }
 
-    // The name tab: right-aligned on the frame's top edge, sitting ABOVE the
-    // window so it covers none of the client's own pixels (for a client that
-    // draws its own titlebar, that is where its tabs and buttons are). When
-    // fullscreen there is no outside, so it tucks inside the top-right corner.
-    std::optional<wf::geometry_t> tab_box()
+    using placed_tab = std::pair<tab_t*, wf::geometry_t>;
+
+    // The tabs, laid right to left along the frame's top edge, sitting ABOVE
+    // the window so they cover none of the client's own pixels (for a client
+    // that draws its own titlebar, that is where its tabs and buttons are);
+    // with rounded corners, on the straight part of the edge, clear of the
+    // curve. When fullscreen there is no outside, so they tuck inside the
+    // top-right corner. The enclave's name comes first, so it keeps the place
+    // it has always had; the awake tab sits to its left. A tab with no room
+    // is dropped (the frame alone still marks the window).
+    std::vector<placed_tab> tabs(float scale)
     {
+        std::vector<placed_tab> out;
         auto box = window_box();
-        if (!style->label || !box)
+        if (!box)
         {
-            return {};
+            return out;
         }
 
-        float scale = output_scale();
-        update_label(scale);
-        double w = label_px.width / scale, h = label_px.height / scale;
-        double t = style->thickness;
-        if (w + 2 * t > box->width)
+        double t  = style->thickness;
+        bool fs   = fullscreen();
+        double right = fs ? box->x + box->width - t :
+            box->x + box->width + t - corner_radius();
+        double used = 0;
+        auto lay = [&] (tab_t& tab, const std::string& str, wf::color_t c)
         {
-            return {};   // no room: the frame alone still marks it
+            tab.update(str, c, style->label_size, scale);
+            double w = tab.px.width / scale, h = tab.px.height / scale;
+            if (used + w + 2 * t > box->width)
+            {
+                return;
+            }
+
+            double x = right - used - w;
+            double y = fs ? box->y + t : box->y - t - h;
+            out.push_back({&tab, wf::geometry_t{x, y, w, h}});
+            used += w;
+        };
+        if (enclave && style->label)
+        {
+            lay(name_tab, instance.empty() ? "sandbox" : instance,
+                style->color_for(instance));
         }
 
-        if (fullscreen())
+        if (show_awake())
         {
-            return wf::geometry_t{box->x + box->width - t - w, box->y + t,
-                w, h};
+            lay(awake_tab, style->awake_label, style->awake_color);
         }
 
-        // Right-aligned on the frame's top edge; with rounded corners, on
-        // the straight part of it, clear of the curve.
-        double inset = corner_radius();
-        return wf::geometry_t{box->x + box->width + t - w - inset,
-            box->y - t - h, w, h};
+        return out;
     }
 
     wf::geometry_t get_bounding_box() override
     {
-        auto f   = frame_box();
-        auto tab = tab_box();
-        if (!tab)
+        auto f = frame_box();
+        for (auto& [tab, g] : tabs(output_scale()))
         {
-            return f;
+            if ((f.width <= 0) || (f.height <= 0))
+            {
+                f = g;
+                continue;
+            }
+
+            double x1 = std::min(f.x, g.x), y1 = std::min(f.y, g.y);
+            double x2 = std::max(f.x + f.width, g.x + g.width);
+            double y2 = std::max(f.y + f.height, g.y + g.height);
+            f = {x1, y1, x2 - x1, y2 - y1};
         }
 
-        double x1 = std::min(f.x, tab->x), y1 = std::min(f.y, tab->y);
-        double x2 = std::max(f.x + f.width, tab->x + tab->width);
-        double y2 = std::max(f.y + f.height, tab->y + tab->height);
-        return {x1, y1, x2 - x1, y2 - y1};
+        return f;
     }
 
     // The radius pixdecor rounds this window's corners with, or 0 for a
@@ -348,10 +420,9 @@ class mark_node_t : public wf::scene::node_t
     void render(const wf::scene::render_instruction_t& data)
     {
         render_frame(data);
-        if (auto tab = tab_box())
+        for (auto& [tab, g] : tabs(data.target.scale))
         {
-            update_label(data.target.scale);
-            data.pass->add_texture(label.get_texture(), data.target, *tab,
+            data.pass->add_texture(tab->text.get_texture(), data.target, g,
                 data.damage);
         }
     }
@@ -365,7 +436,7 @@ class mark_node_t : public wf::scene::node_t
             return;
         }
 
-        auto c = style->color_for(instance);
+        auto c = frame_color();
         auto& p = *data.pass;
         // R: how far each corner piece reaches along the edges. Square, it
         // is the thickness; rounded, the ring's outer radius.
@@ -483,6 +554,8 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
     wf::option_wrapper_t<bool> label{"enclave-mark/label"};
     wf::option_wrapper_t<int> label_size{"enclave-mark/label_size"};
     wf::option_wrapper_t<std::string> colors{"enclave-mark/colors"};
+    wf::option_wrapper_t<wf::color_t> awake_color{"enclave-mark/awake_color"};
+    wf::option_wrapper_t<std::string> awake_label{"enclave-mark/awake_label"};
     mark_style_t style;
 
     void load_style()
@@ -490,6 +563,9 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
         style.thickness  = std::max(1, (int)thickness);
         style.label      = label;
         style.label_size = std::max(6, (int)label_size);
+        style.awake_color = awake_color;
+        style.awake_label = ((std::string)awake_label).empty() ?
+            std::string{"awake"} : (std::string)awake_label;
         style.colors.clear();
         std::istringstream iss((std::string)colors);
         std::string entry;
@@ -516,28 +592,65 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
         }
     }
 
+    // Mark `view` if it is in a security context or holds idle off, and keep
+    // an existing mark's awake state current; unmark a plain window that has
+    // stopped holding.
     void attach(wayfire_view view)
     {
         auto toplevel = wf::toplevel_cast(view);
-        if (!toplevel || toplevel->has_data(MARK_DATA))
+        if (!toplevel)
         {
             return;
         }
 
+        bool awake = wf::idle_holder::holds(view);
+        if (auto d = toplevel->get_data<mark_data_t>(MARK_DATA))
+        {
+            if (!d->node->is_enclave() && !awake)
+            {
+                detach(view);
+                LOGI("enclave-mark: view ", view->get_id(), " released idle");
+                return;
+            }
+
+            d->node->set_awake(awake);
+            return;
+        }
+
         auto ctx = wf::security_context::lookup_client(view->get_client());
-        if (!ctx)
+        if (!ctx && !awake)
         {
             return;
         }
 
         auto data  = std::make_unique<mark_data_t>();
         data->node = std::make_shared<mark_node_t>(toplevel, &style,
-            ctx->instance_id);
+            ctx.has_value(), ctx ? ctx->instance_id : std::string{});
+        data->node->set_awake(awake);
         wf::scene::add_front(toplevel->get_surface_root_node(), data->node);
         data->node->refresh();
-        LOGI("enclave-mark: marked view ", view->get_id(), " (instance '",
-            ctx->instance_id, "', engine '", ctx->sandbox_engine, "')");
+        if (ctx)
+        {
+            LOGI("enclave-mark: marked view ", view->get_id(), " (instance '",
+                ctx->instance_id, "', engine '", ctx->sandbox_engine, "')",
+                awake ? ", holding idle" : "");
+        } else
+        {
+            LOGI("enclave-mark: marked view ", view->get_id(), " holding idle");
+        }
+
         toplevel->store_data(std::move(data), MARK_DATA);
+    }
+
+    void detach(wayfire_view view)
+    {
+        if (auto d = view->get_data<mark_data_t>(MARK_DATA))
+        {
+            auto node = d->node;
+            wf::scene::damage_node(node, node->get_bounding_box());
+            wf::scene::remove_child(node);
+            view->erase_data(MARK_DATA);
+        }
     }
 
     void refresh(wayfire_view view)
@@ -554,6 +667,8 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
         [=] (wf::view_geometry_changed_signal *ev) { refresh(ev->view); };
     wf::signal::connection_t<wf::view_fullscreen_signal> on_fullscreen =
         [=] (wf::view_fullscreen_signal *ev) { refresh(ev->view); };
+    wf::signal::connection_t<wf::idle_holder::changed_signal> on_idle_holder =
+        [=] (wf::idle_holder::changed_signal *ev) { attach(ev->view); };
 
   public:
     void init() override
@@ -563,7 +678,10 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
         label.set_callback([=] { load_style(); });
         label_size.set_callback([=] { load_style(); });
         colors.set_callback([=] { load_style(); });
+        awake_color.set_callback([=] { load_style(); });
+        awake_label.set_callback([=] { load_style(); });
         wf::get_core().connect(&on_mapped);
+        wf::get_core().connect(&on_idle_holder);
         wf::get_core().connect(&on_geometry);
         wf::get_core().connect(&on_fullscreen);
         for (auto& view : wf::get_core().get_all_views())
@@ -579,13 +697,7 @@ class wayfire_enclave_mark : public wf::plugin_interface_t
     {
         for (auto& view : wf::get_core().get_all_views())
         {
-            if (auto d = view->get_data<mark_data_t>(MARK_DATA))
-            {
-                auto node = d->node;
-                wf::scene::damage_node(node, node->get_bounding_box());
-                wf::scene::remove_child(node);
-                view->erase_data(MARK_DATA);
-            }
+            detach(view);
         }
     }
 };

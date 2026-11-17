@@ -38,5 +38,20 @@
       listed gets a stable colour hashed from its name.</_long>
       <default></default>
     </option>
+
+    <option name="awake_color" type="color">
+      <_short>Awake colour</_short>
+      <_long>A window holding idle off (counted by the idle-audit plugin) is
+      marked: a plain window gets a frame and tab in this colour, an enclave
+      window keeps its own frame and gains a tab in it. The default, white,
+      is outside the hashed enclave palette.</_long>
+      <default>1.0 1.0 1.0 1.0</default>
+    </option>
+
+    <option name="awake_label" type="string">
+      <_short>Awake tab text</_short>
+      <_long>The text on the tab of a window holding idle off.</_long>
+      <default>awake</default>
+    </option>
   </plugin>
 </wayfire>
