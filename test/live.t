@@ -129,6 +129,10 @@
 #                   windows; a personal token activates anything; a token
 #                   with no creating surface cannot pull focus INTO an enclave
 #                   (stock honours all seven)
+#   activation-far  an honoured activation of a window that is NOT on
+#                   screen brings it there, as window-rules/focus-view does:
+#                   on another workspace of the same output, and of the
+#                   other output (severance SV12)
 #
 # Two compositor runs, so the scale-0.5 crash on stock cannot hide the other
 # checks. All checks run and report; the test fails if any did. A caller's
@@ -160,7 +164,7 @@ ALLOW="ext_foreign_toplevel_image_capture_source_manager_v1
 ALLOW=$(printf '%s\n' $ALLOW | tr '\n' ' ' | sed 's/ $//')
 MARK="255 0 255"
 PLUGINS="ipc ipc-rules pixdecor filters security-context-v1 enclave-mark
-  toplevel-capture xdg-activation"
+  toplevel-capture xdg-activation vswitch"
 PLUGINS=$(printf '%s ' $PLUGINS | sed 's/ $//')
 
 _live_stop() {
@@ -907,6 +911,61 @@ act_case() {
   exec 7>&- 8>&-
 }
 
+# act_far <same|other>: a PERSONAL token activating a TITAN window that is
+# not on screen: it sits on HEADLESS-1's workspace (0,0) while that output
+# shows (1,0), and the creator is on HEADLESS-1 (same) or HEADLESS-2
+# (other). Prints "<HEADLESS-1 workspace x,y> <focused app> <focused output>"
+# afterwards; honoured and brought on screen is "0,0 <target> HEADLESS-1".
+act_far() {
+  _n=$((_n + 1)); _ci=$S/c$_n.in; _ai=$S/a$_n.in
+  mkfifo "$_ci" "$_ai"
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN "$T/activate" token "c$_n" \
+    < "$_ci" > "$S/c$_n.out" 2> "$S/c$_n.err" &
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 7> "$_ci"
+  WAYLAND_DISPLAY=$S/ctx.sock XDG_RUNTIME_DIR=$RUN "$T/activate" \
+    activate "a$_n" < "$_ai" > "$S/a$_n.out" 2>&1 &
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 8> "$_ai"
+  _a=$(wait_view "v['app-id'] == 'a$_n'" | jpy "d['id']")
+  _c=$(wait_view "v['app-id'] == 'c$_n'" | jpy "d['id']")
+  _o1=$(jpy "[o['id'] for o in d if o['name'] == 'HEADLESS-1'][0]" \
+    < "$S/outputs.json")
+  _o2=$(jpy "[o['id'] for o in d if o['name'] == 'HEADLESS-2'][0]" \
+    < "$S/outputs.json")
+  ipc vswitch/set-workspace "{\"x\": 0, \"y\": 0, \"output-id\": $_o1}" \
+    > /dev/null
+  ipc window-rules/configure-view "{\"id\": $_a, \"output_id\": $_o1}" \
+    > /dev/null
+  if [ "$1" = same ]; then
+    ipc window-rules/configure-view "{\"id\": $_c, \"output_id\": $_o1}" \
+      > /dev/null
+    ipc vswitch/set-workspace "{\"x\": 1, \"y\": 0, \"output-id\": $_o1,
+      \"view-id\": $_c}" > /dev/null
+  else
+    ipc window-rules/configure-view "{\"id\": $_c, \"output_id\": $_o2}" \
+      > /dev/null
+    ipc vswitch/set-workspace "{\"x\": 1, \"y\": 0, \"output-id\": $_o1}" \
+      > /dev/null
+  fi
+  ipc window-rules/focus-view "{\"id\": $_c}" > /dev/null
+  until_true "[ \"\$(focused_app)\" = c$_n ]"
+  _before=$(ipc window-rules/output-info "{\"id\": $_o1}" \
+    | jpy "'%d,%d' % (d['workspace']['x'], d['workspace']['y'])")
+  sleep 0.2
+  echo surface >&7
+  until_true "grep -q '^token' '$S/c$_n.out'"
+  sed -n 's/^token //p' "$S/c$_n.out" >&8
+  until_true "grep -q requested '$S/a$_n.out'"
+  sleep 0.3
+  printf '%s %s %s %s\n' "$_before" \
+    "$(ipc window-rules/output-info "{\"id\": $_o1}" \
+      | jpy "'%d,%d' % (d['workspace']['x'], d['workspace']['y'])")" \
+    "$(focused_app)" \
+    "$(ipc window-rules/get-focused-output | jpy "d['info']['name']")"
+  exec 7>&- 8>&-
+}
+
 check_activation() {
   client actctx "$T/secctx" "$S/ctx-work.sock" work; ACT_PIDS=$!
   client kbd "$T/activate" kbd; ACT_PIDS="$ACT_PIDS $!"
@@ -921,6 +980,18 @@ check_activation() {
   done
   [ "$_got" = accaaca ]
   check activation $? "got [$_got], want [accaaca] (a: honoured, c: denied)"
+
+  act_far same > "$S/far-same"; _fs=$(cat "$S/far-same"); _ns=$_n
+  act_far other > "$S/far-other"; _fo=$(cat "$S/far-other")
+  # "<before> <after> <focused> <output>": shown (1,0) before, (0,0) after
+  if [ "$_fs" = "1,0 0,0 a$_ns HEADLESS-1" ] \
+    && [ "$_fo" = "1,0 0,0 a$_n HEADLESS-1" ]; then
+    check activation-far 0 "brought on screen: same output [$_fs], other
+    output [$_fo]"
+  else
+    check activation-far 1 "want '1,0 0,0 a$_ns HEADLESS-1' and '1,0 0,0
+    a$_n HEADLESS-1', got [$_fs] and [$_fo]"
+  fi
 }
 
 # Session 2: two scale-1 outputs, for everything else.
