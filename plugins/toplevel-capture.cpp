@@ -1321,6 +1321,22 @@ class wayfire_toplevel_capture : public wf::plugin_interface_t
     {
         return false;
     }
+
+    // At shutdown wayfire dlcloses this .so the moment fini returns (tackup's
+    // enable_so_unloading), so nothing of ours may outlive it. Every mapped
+    // view carries our record, identifiers and veil node, whose code is here;
+    // left on the view, its later destruction ran unmapped code and crashed
+    // every shutdown (measured: plugins `ipc ipc-rules toplevel-capture`, 2
+    // of 2). Undo for every view what the unmap handler undoes for one.
+    void fini() override
+    {
+        for (auto& view : wf::get_core().get_all_views())
+        {
+            view->erase_data(wf::toplevel_identifier::DATA_NAME);
+            view->erase_data(RECORD_DATA);
+            unveil(view);
+        }
+    }
 };
 
 void wayfire_toplevel_capture::handle_request(void *data)

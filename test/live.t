@@ -146,6 +146,10 @@
 #                   and a shader unset without a replace still fades out and
 #                   goes, so its hook followed the window (hwdp W4; stock
 #                   segfaults at the replace, freeing the old node)
+#   capture-teardown a shutdown with windows mapped and plugins unloaded as
+#                   they go (enable_so_unloading): toplevel-capture leaves
+#                   nothing on the views, so wayfire exits without a fault
+#                   (without its fini, every such shutdown segfaulted)
 #   annotate-grid   the workspace grid grown and shrunk at runtime, each new
 #                   corner visited: annotate survives every step (stock
 #                   indexes past the table it built at init and aborts on
@@ -1840,6 +1844,41 @@ session_filtersout() {
   _live_stop
 }
 
+# --- capture-teardown: nothing of ours outlives our .so ------------------
+# wayfire dlcloses each plugin right after its fini at shutdown when
+# enable_so_unloading is on (tackup sets it), so data a plugin leaves on a
+# view runs unmapped code when the view goes. `ipc` alone shuts down clean;
+# wayfire's own ipc-rules leaks a method (tackup WM7), so it stays out.
+session_capteardown() {
+  printf '%s\n' '[core]' 'plugins = ipc toplevel-capture' 'xwayland = false' \
+    '' '[workarounds]' 'enable_so_unloading = true' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' > "$T/capteardown.ini"
+  start_wayfire "$T/s14" "$T/capteardown.ini" 1
+  for _n in 1 2; do
+    WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN foot -c "$T/foot.ini" \
+      --app-id "wfm-td$_n" sleep 600 > /dev/null 2>&1 &
+    ACT_PIDS="$ACT_PIDS $!"
+  done
+  sleep 1.5
+  kill -TERM "$WF_PID"
+  _i=0
+  while kill -0 "$WF_PID" 2>/dev/null && [ "$_i" -lt 100 ]; do
+    sleep 0.2; _i=$((_i + 1))
+  done
+  if grep -q 'Fatal error' "$S/wf.log"; then
+    check capture-teardown 1 "shutdown faulted: $(grep -m 1 'Fatal' \
+      "$S/wf.log")"
+  elif kill -0 "$WF_PID" 2>/dev/null; then
+    check capture-teardown 1 "still running 20s after SIGTERM"
+  elif grep -q 'Unloading plugins' "$S/wf.log"; then
+    check capture-teardown 0 "two windows mapped, unloaded, exited clean"
+  else
+    check capture-teardown 1 "no shutdown in the log at all"
+  fi
+  WF_PID=
+  _live_stop
+}
+
 # --- annotate-grid: the grid changed at runtime (hwdp W1) -----------------
 # annotate built one overlay per workspace at init and indexed by the live
 # grid, so the first visit to a grown column aborted. Each step changes the
@@ -1890,5 +1929,6 @@ session_awake
 session_annograd
 session_wallslice
 session_filtersout
+session_capteardown
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"
