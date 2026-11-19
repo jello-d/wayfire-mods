@@ -189,7 +189,7 @@ say "wayfire $WAYFIRE_REF (+ our patches)"
 # loop both read it, so a patch cannot be applied without forcing a rebuild.
 WAYFIRE_PATCHES="wayfire-ipc-guard-dialog-output wayfire-startup-image
   wayfire-scale-clamp wayfire-security-context-allowlist
-  wayfire-xdg-activation-sandbox wayfire-diag-focus-surface
+  wayfire-xdg-activation-sandbox
   wayfire-ipc-security-context wayfire-ipc-toplevel-identifier
   wayfire-output-commit-backoff wayfire-ipc-name-dropped-client"
 _w=$(pin "$WAYFIRE_REF" "$WLROOTS_REF" \
