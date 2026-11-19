@@ -51,5 +51,7 @@ keeps those cells' nodes untouched, which is read, not measured.
 
 ## Upstream
 
-A report to WayfireWM/wayfire-plugins-extra is drafted in the W1 reply and
-not filed. Drop this patch when the pin passes an upstream fix.
+A candidate for WayfireWM/wayfire-plugins-extra, NOT filed: nothing goes to
+a repo outside our control for now (the user, 2026-11-18). The reproduction
+above is the report, should that change. Drop this patch when the pin passes
+an upstream fix.
