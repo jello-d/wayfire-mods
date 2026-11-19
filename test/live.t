@@ -136,6 +136,10 @@
 #                   draws nowhere; a plain FILE with a space still loads; a
 #                   missing slice falls back to the plain line (stock reads
 #                   `OUTPUT /abs` as one file name and shows no wallpaper)
+#   wallpaper-caps  the RUNNING plugin says it reads slices, over IPC
+#                   (hwdp W3): `slices: true`, still there after one
+#                   output's instance stops, gone once the plugin unloads
+#                   (stock has no such method)
 #   annotate-grid   the workspace grid grown and shrunk at runtime, each new
 #                   corner visited: annotate survives every step (stock
 #                   indexes past the table it built at init and aborts on
@@ -1736,6 +1740,23 @@ session_wallslice() {
   else
     check wallpaper-slice 1 "want [$_want] got [$_seen]"
   fi
+
+  # The capability is the CODE's: one answer while any instance runs.
+  _cap() { ipc workspace-wallpaper/capabilities 2>&1 | tr -d '\n '; }
+  _c1=$(_cap)
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN wlr-randr --output HEADLESS-2 \
+    --off > /dev/null 2>&1
+  sleep 0.5
+  _c2=$(_cap)
+  ipc wayfire/set-config-options \
+    '{"core/plugins": "ipc ipc-rules vswitch"}' > /dev/null 2>&1
+  sleep 0.5
+  _c3=$(_cap)
+  case "$_c1|$_c2|$_c3" in
+    *'"slices":true'*'|'*'"slices":true'*'|'*) _ok=0 ;; *) _ok=1 ;; esac
+  case $_c3 in *slices*) _ok=1 ;; esac
+  check wallpaper-caps "$_ok" "running [$_c1], one output off [$_c2],
+    unloaded [$_c3]"
   _live_stop
 }
 

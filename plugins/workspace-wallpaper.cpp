@@ -31,6 +31,13 @@
 // output name never does) and the rest is an absolute or ~/ path, so a FILE
 // with spaces ("night sky.png", "/a/night sky.png") cannot be misread as one.
 // A slice line naming an output that is not this one is not ours to draw.
+//
+// AN INTEGRATOR CAN ASK THE RUNNING CODE (hwdp W3): IPC method
+// `workspace-wallpaper/capabilities` answers {"result": "ok", "slices":
+// true}. An older build has no such method, so the question itself tells the
+// LOADED code apart from a newer one installed but not yet running: an
+// integrator points this plugin at a slice manifest only on a yes, since an
+// old parser turns every slice line into a black cell.
 
 #include <wayfire/plugin.hpp>
 #include <wayfire/per-output-plugin.hpp>
@@ -43,6 +50,8 @@
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/util/log.hpp>
+#include <wayfire/plugins/common/shared-core-data.hpp>
+#include <wayfire/plugins/ipc/ipc-method-repository.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -328,6 +337,19 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
   wf::option_wrapper_t<std::string> manifest{"workspace-wallpaper/manifest"};
 
   GLuint black_tex = (GLuint)-1;
+
+  // One method for every output's instance: the first to start registers
+  // it, the last to stop removes it (any one unregistering removes it for
+  // all, so the count is the point). The answer is about the code, not an
+  // output, so which instance's handler is installed does not matter.
+  static inline int capability_users = 0;
+  bool counted = false;
+  wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc;
+  wf::ipc::method_callback capabilities = [] (const wf::json_t&) {
+    auto r = wf::ipc::json_ok();
+    r["slices"] = true;
+    return r;
+  };
 
   wf::dimensions_t grid_size{1, 1};
   wf::geometry_t og{0, 0, 0, 0};
@@ -658,6 +680,10 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
 
     black_tex = create_solid_rgba_texture(0, 0, 0, 255);
 
+    if (capability_users++ == 0)
+      ipc->register_method("workspace-wallpaper/capabilities", capabilities);
+    counted = true;
+
     output->connect(&viewport_changed);
     output->connect(&output_config_changed);
     output->connect(&wset_changed);
@@ -683,6 +709,9 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
   }
 
   void fini() override {
+    if (counted && (--capability_users == 0))
+      ipc->unregister_method("workspace-wallpaper/capabilities");
+    counted = false;
     grid_changed.disconnect();
     wset_changed.disconnect();
     remove_nodes();   // before the textures they point at go
