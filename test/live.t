@@ -140,6 +140,12 @@
 #                   (hwdp W3): `slices: true`, still there after one
 #                   output's instance stops, gone once the plugin unloads
 #                   (stock has no such method)
+#   filters-output  a view shader set on a window on HEADLESS-2, that output
+#                   then switched off (which FREES wayfire's output): the
+#                   shader replaced still renders on the window's new output,
+#                   and a shader unset without a replace still fades out and
+#                   goes, so its hook followed the window (hwdp W4; stock
+#                   segfaults at the replace, freeing the old node)
 #   annotate-grid   the workspace grid grown and shrunk at runtime, each new
 #                   corner visited: annotate survives every step (stock
 #                   indexes past the table it built at init and aborts on
@@ -1760,6 +1766,80 @@ session_wallslice() {
   _live_stop
 }
 
+# --- filters-output: a view shader outlives its output (hwdp W4) ----------
+# wf_filters took its view's output once and handed its hook back to that
+# output when destroyed; after an undock that output was freed. Switching a
+# headless output off frees wayfire's output object (source NONE destroys
+# it), so it reproduces the undock without a nested compositor.
+session_filtersout() {
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules filters' \
+    'xwayland = false' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' 'position = 0,0' '' \
+    '[output:HEADLESS-2]' 'mode = 1280x720@60000' 'position = 1280,0' \
+    > "$T/filtersout.ini"
+  start_wayfire "$T/s13" "$T/filtersout.ini" 2
+  _o2=$(jpy "[o['id'] for o in d if o['name'] == 'HEADLESS-2'][0]" \
+    < "$S/outputs.json")
+  # Each client's stdin is a FIFO, and opening a FIFO to read blocks until
+  # a writer opens it: the writer must open before the window can map.
+  mkfifo "$S/fa.fifo" "$S/fb.fifo"
+  client fa sh -c "exec '$T/inhibit' window wfm-fa < '$S/fa.fifo'"
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 7> "$S/fa.fifo"
+  client fb sh -c "exec '$T/inhibit' window wfm-fb < '$S/fb.fifo'"
+  ACT_PIDS="$ACT_PIDS $!"
+  exec 8> "$S/fb.fifo"
+  _ids=
+  for _n in fa fb; do
+    _v=$(wait_view "v['app-id'] == 'wfm-$_n'" | jpy "d['id']") || _v=
+    ipc window-rules/configure-view "{\"id\": ${_v:-0},
+      \"output_id\": $_o2}" > /dev/null 2>&1
+    _ids="$_ids $_v"
+  done
+  # shellcheck disable=SC2086  # two view ids
+  set -- $_ids
+  _va=${1:-0}; _vb=${2:-0}
+  _sh() {
+    ipc wf/filters/set-view-shader \
+      "{\"view-id\": $1, \"shader-path\": \"$T/frame.glsl\"}" 2>&1 \
+      | tr -d '\n '
+  }
+  _has() {
+    ipc wf/filters/view-has-shader "{\"view-id\": $1}" \
+      | jpy "d.get('has-shader')"
+  }
+  _r="set [$(_sh "$_va")$(_sh "$_vb")]"
+  WAYLAND_DISPLAY=$WLD XDG_RUNTIME_DIR=$RUN wlr-randr --output HEADLESS-2 \
+    --off > /dev/null 2>&1
+  sleep 0.5
+  _r="$_r replace [$(_sh "$_va")]"
+  sleep 0.5
+  _px=
+  if alive; then
+    _g=$(ipc window-rules/view-info "{\"id\": $_va}" | jpy "'%s %d %d' % (
+      d['info']['output-name'],
+      d['info']['geometry']['x'] + d['info']['geometry']['width'] // 2,
+      d['info']['geometry']['y'] + d['info']['geometry']['height'] // 2)")
+    # shellcheck disable=SC2086  # "<output> <x> <y>"
+    set -- $_g
+    _px="$1 $(at "$2" "$3")"
+    ipc wf/filters/unset-view-shader "{\"view-id\": $_vb}" > /dev/null
+    ipc wf/filters/unset-view-shader "{\"view-id\": $_va}" > /dev/null
+    sleep 1.3
+    _r="$_r gone [$(_has "$_vb") $(_has "$_va")]"
+  fi
+  case $_px in
+    "HEADLESS-1 255 0 0"|"HEADLESS-1 0 255 0") _shown=0 ;; *) _shown=1 ;;
+  esac
+  if alive && [ "$_shown" = 0 ] && [ "${_r##*gone }" = "[False False]" ]
+  then check filters-output 0 "$_r; drawn on [$_px]"
+  else check filters-output 1 "$_r; drawn on [$_px]; $(grep -m 1 \
+    -e Fatal "$S/wf.log" 2>/dev/null || echo 'no fatal line')"
+  fi
+  exec 7>&- 8>&-
+  _live_stop
+}
+
 # --- annotate-grid: the grid changed at runtime (hwdp W1) -----------------
 # annotate built one overlay per workspace at init and indexed by the live
 # grid, so the first visit to a grown column aborted. Each step changes the
@@ -1809,5 +1889,6 @@ session_idleaudit
 session_awake
 session_annograd
 session_wallslice
+session_filtersout
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

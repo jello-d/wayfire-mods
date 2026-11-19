@@ -252,10 +252,10 @@ else
 fi
 
 # --- filters / pixdecor: our patches; wf-info: clean ------------------------
-say "filters $FILTERS_REF (+ our patch)"
+say "filters $FILTERS_REF (+ our patches)"
 _patched filters "$LIBDIR/wayfire/libfilters.so" filters \
   "$FILTERS_URL" "$FILTERS_REF" filters-frame-margins.patch \
-  -- -Dbuildtype=release
+  filters-view-output.patch -- -Dbuildtype=release
 
 say "wf-info $WF_INFO_REF"
 staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_STAMP")" \

@@ -1,0 +1,93 @@
+--- a/src/filters.cpp
++++ b/src/filters.cpp
+@@ -28,6 +28,7 @@
+ #include <wayfire/view.hpp>
+ #include <wayfire/plugin.hpp>
+ #include <wayfire/output.hpp>
++#include <wayfire/output-layout.hpp>
+ #include <wayfire/opengl.hpp>
+ #include <wayfire/util/duration.hpp>
+ #include <wayfire/render-manager.hpp>
+@@ -106,7 +107,16 @@
+ class wf_filters : public wf::scene::view_2d_transformer_t
+ {
+     wayfire_view view;
+-    wf::output_t *output;
++    /*
++     * wayfire-mods (filters-view-output): the output whose render manager runs
++     * pre_hook. It FOLLOWS the view (every output change goes through
++     * set_output, which signals the view), and it lets go of an output before
++     * that output is freed, since the destructor hands pre_hook back to it.
++     * Taken once and never updated, an undock left it pointing at a freed
++     * output, and replacing the shader then crashed in rem_effect. Never left
++     * uninitialised either: a view with no output had a garbage pointer here.
++     */
++    wf::output_t *output = nullptr;
+     OpenGL::program_t *shader;
+     std::unique_ptr<wf::animation::simple_animation_t> fade;
+ 
+@@ -256,15 +266,47 @@
+         }
+     };
+ 
+-    wf_filters(wayfire_view view, std::string shader_path) : wf::scene::view_2d_transformer_t(view)
++    void attach(wf::output_t *to)
+     {
+-        this->view   = view;
+-        this->shader = &program;
+-        if (view->get_output())
++        if (to == output)
++        {
++            return;
++        }
++
++        if (output)
++        {
++            output->render->rem_effect(&pre_hook);
++        }
++
++        output = to;
++        if (output)
+         {
+-            output = view->get_output();
+             output->render->add_effect(&pre_hook, wf::OUTPUT_EFFECT_PRE);
+         }
++    }
++
++    wf::signal::connection_t<wf::view_set_output_signal> on_set_output =
++        [=] (wf::view_set_output_signal*)
++    {
++        attach(view->get_output());
++    };
++
++    wf::signal::connection_t<wf::output_pre_remove_signal> on_output_pre_remove =
++        [=] (wf::output_pre_remove_signal *ev)
++    {
++        if (ev->output == output)
++        {
++            attach(nullptr);
++        }
++    };
++
++    wf_filters(wayfire_view view, std::string shader_path) : wf::scene::view_2d_transformer_t(view)
++    {
++        this->view   = view;
++        this->shader = &program;
++        attach(view->get_output());
++        view->connect(&on_set_output);
++        wf::get_core().output_layout->connect(&on_output_pre_remove);
+ 
+         std::ifstream t(shader_path);
+         std::string fragment_shader((std::istreambuf_iterator<char>(t)), std::istreambuf_iterator<char>());
+@@ -319,10 +361,7 @@
+             program.free_resources();
+         });
+         fade.reset();
+-        if (output)
+-        {
+-            output->render->rem_effect(&pre_hook);
+-        }
++        attach(nullptr);
+     }
+ };
+ 
