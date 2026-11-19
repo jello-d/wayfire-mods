@@ -129,6 +129,13 @@
 #                   windows; a personal token activates anything; a token
 #                   with no creating surface cannot pull focus INTO an enclave
 #                   (stock honours all seven)
+#   wallpaper-slice per-output slices (hwdp W2): `X Y OUTPUT /abs` draws that
+#                   image over exactly that output, split where it was cut;
+#                   another output falls back to the plain `X Y FILE` line
+#                   (covered over the union); a slice for an absent output
+#                   draws nowhere; a plain FILE with a space still loads; a
+#                   missing slice falls back to the plain line (stock reads
+#                   `OUTPUT /abs` as one file name and shows no wallpaper)
 #   annotate-grid   the workspace grid grown and shrunk at runtime, each new
 #                   corner visited: annotate survives every step (stock
 #                   indexes past the table it built at init and aborts on
@@ -1663,6 +1670,75 @@ session_awake() {
   _live_stop
 }
 
+# --- wallpaper-slice: pre-cut per-output slices (hwdp W2) -----------------
+# ppm <file> <w> <h> <r g b> [<r g b> for the right half]: a test image
+ppm() {
+  python3 -I -c 'import sys
+w, h = int(sys.argv[2]), int(sys.argv[3])
+a = bytes(int(v) for v in sys.argv[4].split())
+b = bytes(int(v) for v in (sys.argv[5] if len(sys.argv) > 5
+                           else sys.argv[4]).split())
+row = a * (w // 2) + b * (w - w // 2)
+open(sys.argv[1], "wb").write(b"P6\n%d %d\n255\n" % (w, h) + row * h)' "$@"
+}
+# out_px <output> <fx> <fy>: the pixel at that fraction of the output
+out_px() {
+  _g=$(jpy "[ '%d %d %d %d' % (o['geometry']['x'], o['geometry']['y'],
+    o['geometry']['width'], o['geometry']['height'])
+    for o in d if o['name'] == '$1'][0]" < "$S/outputs.json")
+  # shellcheck disable=SC2086  # four numbers
+  set -- $_g "$2" "$3"
+  pixel "$(python3 -I -c "print(int($1 + $3 * $5))")" \
+    "$(python3 -I -c "print(int($2 + $4 * $6))")"
+}
+session_wallslice() {
+  _w=$T/wall; mkdir -p "$_w"
+  ppm "$_w/plain.ppm" 64 64 "0 255 0"                 # green
+  ppm "$_w/split.ppm" 64 36 "0 0 255" "255 255 0"     # blue | yellow
+  ppm "$_w/absent.ppm" 64 64 "255 0 0"                # red: never shown
+  ppm "$_w/night sky.ppm" 64 64 "255 0 255"           # magenta
+  ppm "$_w/h2.ppm" 64 64 "0 255 255"                  # cyan
+  ppm "$_w/fallback.ppm" 64 64 "255 255 255"          # white
+  printf '%s\n' '# a slice manifest, as wallpaper-slicer -M writes one' \
+    "0 0 HEADLESS-1 $_w/split.ppm" "0 0 HEADLESS-9 $_w/absent.ppm" \
+    "0 0 $_w/plain.ppm" \
+    "1 0 night sky.ppm" "1 0 HEADLESS-2 $_w/h2.ppm" \
+    "0 1 HEADLESS-1 $_w/missing.ppm" "0 1 $_w/fallback.ppm" \
+    > "$_w/slices.map"
+  printf '%s\n' '[core]' \
+    'plugins = ipc ipc-rules vswitch workspace-wallpaper' \
+    'xwayland = false' '' '[workspace-wallpaper]' "directory = $_w" \
+    "manifest = $_w/slices.map" 'mode = fill' '' \
+    '[output:HEADLESS-1]' 'mode = 1280x720@60000' 'position = 0,0' '' \
+    '[output:HEADLESS-2]' 'mode = 1280x720@60000' 'scale = 2' \
+    'position = 1280,0' > "$T/wallslice.ini"
+  start_wayfire "$T/s12" "$T/wallslice.ini" 2
+  ipc window-rules/list-outputs > "$S/outputs.json"
+  _seen=
+  for _ws in "0 0" "1 0" "0 1"; do
+    # shellcheck disable=SC2086  # two numbers
+    set -- $_ws
+    for _o in $(jpy "' '.join(str(o['id']) for o in d)" < "$S/outputs.json")
+    do
+      ipc vswitch/set-workspace \
+        "{\"x\": $1, \"y\": $2, \"output-id\": $_o}" > /dev/null 2>&1
+    done
+    sleep 0.6
+    _seen="$_seen|$1,$2: $(out_px HEADLESS-1 0.25 0.5)/$(out_px \
+      HEADLESS-1 0.75 0.5) $(out_px HEADLESS-2 0.25 0.5)/$(out_px \
+      HEADLESS-2 0.75 0.5)"
+  done
+  _want="|0,0: 0 0 255/255 255 0 0 255 0/0 255 0"
+  _want="$_want|1,0: 255 0 255/255 0 255 0 255 255/0 255 255"
+  _want="$_want|0,1: 255 255 255/255 255 255 255 255 255/255 255 255"
+  if [ "$_seen" = "$_want" ]; then
+    check wallpaper-slice 0 "slice, fallback, absent output, spaced file"
+  else
+    check wallpaper-slice 1 "want [$_want] got [$_seen]"
+  fi
+  _live_stop
+}
+
 # --- annotate-grid: the grid changed at runtime (hwdp W1) -----------------
 # annotate built one overlay per workspace at init and indexed by the live
 # grid, so the first visit to a grown column aborted. Each step changes the
@@ -1711,5 +1787,6 @@ session_ipcname
 session_idleaudit
 session_awake
 session_annograd
+session_wallslice
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

@@ -29,7 +29,12 @@
       <_short>Manifest file</_short>
       <_long>Optional path to a coordinate map. Each non-comment line is
       "x y path"; path is absolute, ~-relative, or relative to directory.
-      Entries here override the directory/pattern probe.</_long>
+      Entries here override the directory/pattern probe. A line
+      "x y OUTPUT /abs/slice" is a pre-cut slice: on that output, that
+      workspace shows the image over the whole output as cut, and the plain
+      "x y path" line is the fallback for every other output. A line is a
+      slice when its third field holds no '/' and the rest is an absolute
+      or ~/ path.</_long>
       <default></default>
     </option>
 

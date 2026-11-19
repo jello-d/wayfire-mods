@@ -13,6 +13,24 @@
 // rectangle is computed from the union (not per-output), the slices tile
 // exactly: a feature crossing a bezel is continuous. Per-output centering is
 // never used for the wallpaper, which is what previously broke the seams.
+//
+// PRE-CUT SLICES (hwdp W2). The union cover is in LOGICAL pixels, so on a desk
+// of mixed density the image jumps in physical size at every seam (a 1x panel
+// beside a 1.5x one shows it 1.5x larger). wallpaper-slicer -M cuts each image
+// per output in millimetres instead, and its manifest names a slice per output:
+//
+//   X Y OUTPUT /abs/slice.png   on OUTPUT, workspace (X,Y) shows this image
+//                               over the whole output, exactly as cut (no fit
+//                               maths; stretched only if its size differs)
+//   X Y FILE                    as before: covered over the union. The
+//                               FALLBACK for an output with no slice for that
+//                               cell (a panel plugged after the cut, a cell
+//                               the slicer could not cut, a missing slice)
+//
+// A line is a slice exactly when its first token after X Y holds no '/' (an
+// output name never does) and the rest is an absolute or ~/ path, so a FILE
+// with spaces ("night sky.png", "/a/night sky.png") cannot be misread as one.
+// A slice line naming an output that is not this one is not ours to draw.
 
 #include <wayfire/plugin.hpp>
 #include <wayfire/per-output-plugin.hpp>
@@ -54,6 +72,7 @@ struct gl_texture_t {
   int width = 0;
   int height = 0;
   bool valid = false;
+  bool slice = false;  // a pre-cut slice: drawn over this output's own rect
 
   void destroy() {
     if (valid && (tex != (GLuint)-1)) {
@@ -63,6 +82,7 @@ struct gl_texture_t {
     tex = (GLuint)-1;
     width = height = 0;
     valid = false;
+    slice = false;
   }
 };
 
@@ -318,6 +338,8 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
 
   fit_mode_t current_mode = fit_mode_t::FILL;
   std::map<std::pair<int, int>, std::string> manifest_map;
+  // This output's pre-cut slices, from `X Y OUTPUT /abs` lines naming it.
+  std::map<std::pair<int, int>, std::string> slice_map;
 
   static std::string expand_home(const std::string& in) {
     if (!in.empty() && (in[0] == '~') && (in.size() == 1 || in[1] == '/')) {
@@ -407,6 +429,7 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
 
   void load_manifest() {
     manifest_map.clear();
+    slice_map.clear();
     std::string path = expand_home((std::string)manifest);
     if (path.empty()) return;
 
@@ -430,9 +453,41 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
       size_t b = file.find_first_not_of(" \t");
       size_t c = file.find_last_not_of(" \t\r\n");
       if (b == std::string::npos) continue;
+      std::string rest = file.substr(b, c - b + 1);
 
-      manifest_map[{x, y}] = file.substr(b, c - b + 1);
+      // `X Y OUTPUT /abs/slice.png`? (the rule is in the header)
+      size_t sp = rest.find_first_of(" \t");
+      if (sp != std::string::npos) {
+        std::string first = rest.substr(0, sp);
+        size_t d = rest.find_first_not_of(" \t", sp);
+        std::string path = (d == std::string::npos) ? "" : rest.substr(d);
+        bool absolute = !path.empty() &&
+                        ((path[0] == '/') || (path.rfind("~/", 0) == 0));
+        if (absolute && (first.find('/') == std::string::npos)) {
+          if (first == output->handle->name) slice_map[{x, y}] = path;
+          continue;
+        }
+      }
+
+      manifest_map[{x, y}] = rest;
     }
+  }
+
+  // Load one image into `t`; false (logged) if it is missing or unreadable.
+  static bool load_image(gl_texture_t& t, const fs::path& path) {
+    if (!fs::exists(path)) return false;
+    int iw = 0, ih = 0, comp = 0;
+    stbi_uc *data = stbi_load(path.c_str(), &iw, &ih, &comp, 4);
+    if (!data) {
+      LOGE("workspace-wallpaper: failed to load ", path.string(), ": ",
+           stbi_failure_reason());
+      return false;
+    }
+
+    bool ok = upload_rgba_to_gl(t, data, iw, ih);
+    stbi_image_free(data);
+    if (!ok) LOGE("workspace-wallpaper: upload failed ", path.string());
+    return ok;
   }
 
   void load_all_textures() {
@@ -441,6 +496,16 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
     for (int x = 0; x < grid_size.width; x++) {
       for (int y = 0; y < grid_size.height; y++) {
         textures[x][y].destroy();
+
+        auto sl = slice_map.find({x, y});
+        if (sl != slice_map.end()) {
+          if (load_image(textures[x][y], fs::path(expand_home(sl->second)))) {
+            textures[x][y].slice = true;
+            continue;
+          }
+          LOGW("workspace-wallpaper: slice for ws ", x, ",", y, " on ",
+               output->handle->name, " unusable, falling back: ", sl->second);
+        }
 
         std::optional<fs::path> img_path;
         auto it = manifest_map.find({x, y});
@@ -461,18 +526,7 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
           continue;
         }
 
-        int iw = 0, ih = 0, comp = 0;
-        stbi_uc *data = stbi_load(img_path->c_str(), &iw, &ih, &comp, 4);
-        if (!data) {
-          LOGE("workspace-wallpaper: failed to load ", img_path->string(), ": ",
-               stbi_failure_reason());
-          continue;
-        }
-
-        bool ok = upload_rgba_to_gl(textures[x][y], data, iw, ih);
-        stbi_image_free(data);
-        if (!ok)
-            LOGE("workspace-wallpaper: upload failed ", img_path->string());
+        load_image(textures[x][y], *img_path);
       }
     }
 
@@ -495,6 +549,12 @@ class wayfire_workspace_wallpaper : public wf::per_output_plugin_instance_t {
         nodes[x][y]->set_size(og.width, og.height);
         nodes[x][y]->set_position((x - vp.x) * og.width,
                                   (y - vp.y) * og.height);
+
+        // A pre-cut slice IS this output's rect: no fit, no union.
+        if (textures[x][y].valid && textures[x][y].slice) {
+          nodes[x][y]->set_cover(lg.x, lg.y, lg.width, lg.height, lg.x, lg.y);
+          continue;
+        }
 
         // Image dimensions for this cell (0,0 if not loaded -> fit_image
         // falls back to filling the span, which is fine).
