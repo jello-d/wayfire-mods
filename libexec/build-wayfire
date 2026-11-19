@@ -1,8 +1,8 @@
 #!/bin/sh
 # build-wayfire <prefix> - build our from-source Wayland compositor stack into
 # <prefix> and install it there: wlroots (clean upstream) -> wayfire (+ our
-# patches) -> wcm / wayfire-plugins-extra / wf-info (clean) + filters / pixdecor
-# (+ our patches) + our own plugins, then xdg-desktop-portal-wlr (+ our
+# patches) -> wcm / wf-info (clean) + wayfire-plugins-extra / filters /
+# pixdecor (+ our patches) + our own plugins, then xdg-desktop-portal-wlr (+ our
 # patch; its binary only, see its section). The whole recipe, reused by
 # `setup.sh install` (prefix = /opt/wayfire, sudo) and `setup.sh verify`
 # (prefix = a throwaway dir, no sudo), so the real build and CI take the SAME
@@ -142,23 +142,28 @@ staged() {   # <name> <want> <artifact> <src> <url> <ref> [meson args...]
   fetch "$_ss" "$_su" "$_sr"; build "$SRC/$_ss" "$@"; mark "$_sn" "$_sw"
 }
 
-# _patched <name> <artifact> <src> <url> <ref> <patch>...: fetch, reset to
-# pristine, apply each patch (fail loud on drift), build -Dbuildtype=release.
-# The pin folds in every patch's content, so editing a patch forces a rebuild.
+# _patched <name> <artifact> <src> <url> <ref> <patch>... [-- <meson args>]:
+# fetch, reset to pristine, apply each patch (fail loud on drift), build
+# with the meson args given (each caller states its own buildtype). The pin
+# folds in every patch's content and the args, so editing either rebuilds.
 _patched() {
   _pn=$1; _pa=$2; _ps=$3; _pu=$4; _pr=$5; shift 5
+  _pp=
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do _pp="$_pp $1"; shift; done
+  [ $# -gt 0 ] && shift
+  # shellcheck disable=SC2086  # _pp is a list of patch file names
   _pw=$(pin "$_pr" "$WAYFIRE_STAMP" \
-    "$(for _p in "$@"; do cat "$PATCHES/$_p"; done)")
+    "$(for _p in $_pp; do cat "$PATCHES/$_p"; done)" "$*")
   if in_sync "$_pn" "$_pw" "$_pa"; then echo "  $_pn in sync ($_pr)"; return 0
   fi
   fetch "$_ps" "$_pu" "$_pr"
   pristine "$SRC/$_ps" "$_pr"
-  for _p in "$@"; do
+  for _p in $_pp; do
     ( cd "$SRC/$_ps" && git apply --check "$PATCHES/$_p" \
         && git apply "$PATCHES/$_p" ) || {
       echo "build: $_p did not apply ($_ps drift from $_pr?)" >&2; return 1; }
   done
-  build "$SRC/$_ps" -Dbuildtype=release
+  build "$SRC/$_ps" "$@"
   mark "$_pn" "$_pw"
 }
 
@@ -222,16 +227,16 @@ say "wcm $WCM_REF"
 staged wcm "$(pin "$WCM_REF" "$WAYFIRE_STAMP")" \
   "$PREFIX/bin/wcm" wcm "$WCM_URL" "$WCM_REF"
 
-say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (clean upstream)"
+say "wayfire-plugins-extra $PLUGINS_EXTRA_REF (+ our patch)"
 # Since 0.11.2 plugins-extra can pull pixdecor and filters in as UNPATCHED
 # wraps. Off by default upstream; pinned off here, because both are built
 # below with our patches and the same .so name would be overwritten by
-# whichever installed last.
-staged plugins-extra \
-  "$(pin "$PLUGINS_EXTRA_REF" "$WAYFIRE_STAMP")" \
-  "$LIBDIR/wayfire/libwater.so" \
-  plugins-extra "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF" \
-  -Dpixdecor=false -Dfilters=false
+# whichever installed last. No buildtype, as when it was built clean: the
+# default keeps the libstdc++ assertions that turned annotate's out of range
+# index into a named abort rather than silent memory damage.
+_patched plugins-extra "$LIBDIR/wayfire/libwater.so" plugins-extra \
+  "$PLUGINS_EXTRA_URL" "$PLUGINS_EXTRA_REF" \
+  plugins-extra-annotate-grid.patch -- -Dpixdecor=false -Dfilters=false
 
 # --- our own plugins ---------------------------------------------------------
 say "custom plugins (edge-flipping, workspace-wallpaper, wsync, atlas, ...)"
@@ -249,7 +254,8 @@ fi
 # --- filters / pixdecor: our patches; wf-info: clean ------------------------
 say "filters $FILTERS_REF (+ our patch)"
 _patched filters "$LIBDIR/wayfire/libfilters.so" filters \
-  "$FILTERS_URL" "$FILTERS_REF" filters-frame-margins.patch
+  "$FILTERS_URL" "$FILTERS_REF" filters-frame-margins.patch \
+  -- -Dbuildtype=release
 
 say "wf-info $WF_INFO_REF"
 staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_STAMP")" \
@@ -257,7 +263,8 @@ staged wf-info "$(pin "$WF_INFO_REF" "$WAYFIRE_STAMP")" \
 
 say "pixdecor $PIXDECOR_REF (+ our patch)"
 _patched pixdecor "$LIBDIR/wayfire/libpixdecor.so" pixdecor \
-  "$PIXDECOR_URL" "$PIXDECOR_REF" pixdecor-titlebar-padding.patch
+  "$PIXDECOR_URL" "$PIXDECOR_REF" pixdecor-titlebar-padding.patch \
+  -- -Dbuildtype=release
 
 # --- xdg-desktop-portal-wlr: our patch, the BINARY only ----------------------
 say "xdg-desktop-portal-wlr $XDPW_VERSION (+ our patch)"

@@ -6,8 +6,8 @@
 # into each satellite's stamp). Bump a REF only after `setup.sh verify` proves
 # the whole stack still builds against it.
 #
-# wlroots is CLEAN upstream (no patch). wayfire, filters, and pixdecor carry our
-# patches (patches/); wcm, plugins-extra, and wf-info are clean upstream.
+# wlroots is CLEAN upstream (no patch). wayfire, filters, pixdecor and
+# plugins-extra carry our patches (patches/); wcm and wf-info are clean.
 # Our own plugins live in plugins/ (built against the installed wayfire).
 
 WLROOTS_URL=https://gitlab.freedesktop.org/wlroots/wlroots

@@ -129,6 +129,10 @@
 #                   windows; a personal token activates anything; a token
 #                   with no creating surface cannot pull focus INTO an enclave
 #                   (stock honours all seven)
+#   annotate-grid   the workspace grid grown and shrunk at runtime, each new
+#                   corner visited: annotate survives every step (stock
+#                   indexes past the table it built at init and aborts on
+#                   the first visit to a grown column; hwdp W1)
 #   activation-far  an honoured activation of a window that is NOT on
 #                   screen brings it there, as window-rules/focus-view does:
 #                   on another workspace of the same output, and of the
@@ -1659,6 +1663,41 @@ session_awake() {
   _live_stop
 }
 
+# --- annotate-grid: the grid changed at runtime (hwdp W1) -----------------
+# annotate built one overlay per workspace at init and indexed by the live
+# grid, so the first visit to a grown column aborted. Each step changes the
+# grid over IPC, as apply-wayfire-runtime does, then switches to the new far
+# corner, as an edge flip does.
+session_annograd() {
+  printf '%s\n' '[core]' 'plugins = ipc ipc-rules vswitch annotate' \
+    'xwayland = false' '' '[output:HEADLESS-1]' 'mode = 1280x720@60000' \
+    > "$T/annograd.ini"
+  start_wayfire "$T/s11" "$T/annograd.ini" 1
+  if grep -q 'annotate plugin requires GLES2' "$S/wf.log"; then
+    check annotate-grid 1 "annotate did not start (no GLES2), so this
+    would prove nothing"; _live_stop; return
+  fi
+  _o=$(jpy "d[0]['id']" < "$S/outputs.json")
+  _steps=
+  for _g in "4 3 3 0" "2 2 1 1" "5 4 4 3" "3 3 0 0"; do
+    # shellcheck disable=SC2086  # four numbers
+    set -- $_g
+    ipc wayfire/set-config-options \
+      "{\"core/vwidth\": $1, \"core/vheight\": $2}" > /dev/null
+    ipc vswitch/set-workspace \
+      "{\"x\": $3, \"y\": $4, \"output-id\": $_o}" > /dev/null 2>&1
+    sleep 0.5
+    alive || break
+    _steps="$_steps ${1}x$2@($3,$4)"
+  done
+  if alive && [ "$_steps" = " 4x3@(3,0) 2x2@(1,1) 5x4@(4,3) 3x3@(0,0)" ]
+  then check annotate-grid 0 "grew, shrank, grew, back:$_steps"
+  else check annotate-grid 1 "survived [$_steps]; $(grep -m 1 -e Assert \
+    "$S/wf.log" 2>/dev/null || echo 'no assert in the log')"
+  fi
+  _live_stop
+}
+
 write_fixtures
 session_scale
 session_main
@@ -1671,5 +1710,6 @@ session_unplug
 session_ipcname
 session_idleaudit
 session_awake
+session_annograd
 [ "$FAILS" = 0 ] || fail "$FAILS live check(s) failed against $P"
 pass "$CHECKS checks against $P"

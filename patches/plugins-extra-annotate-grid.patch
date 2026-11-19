@@ -1,0 +1,130 @@
+diff --git a/src/annotate.cpp b/src/annotate.cpp
+index 3b052fd..fa5aded 100644
+--- a/src/annotate.cpp
++++ b/src/annotate.cpp
+@@ -243,6 +243,7 @@ class wayfire_annotate_screen : public wf::per_output_plugin_instance_t, public
+ 
+         output->connect(&output_config_changed);
+         output->connect(&viewport_changed);
++        output->wset()->connect(&grid_changed);
+         method.set_callback(method_changed);
+         output->add_button(draw_binding, &draw_begin);
+         output->add_activator(clear_binding, &clear_workspace);
+@@ -279,14 +280,79 @@ class wayfire_annotate_screen : public wf::per_output_plugin_instance_t, public
+         }
+     };
+ 
++    void destroy_node(std::shared_ptr<simple_node_t> node)
++    {
++        overlay_destroy(node->overlay);
++        overlay_destroy(node->shape_overlay);
++        wf::scene::remove_child(node);
++    }
++
++    /*
++     * The workspace grid can change at runtime (core/vwidth and vheight set
++     * over IPC, or a config reload). Keep exactly one overlay per workspace
++     * of the CURRENT grid: a cell that survives keeps its drawing, a removed
++     * one is dropped, a new one starts empty. Without this, a grid grown
++     * after init() was indexed past the table built there, which aborts.
++     * Called on every grid change, and before every use of the table, since
++     * a workspace set swapped onto the output brings its own grid.
++     */
++    void sync_grid()
++    {
++        auto wsize = output->wset()->get_workspace_grid_size();
++        bool same  = ((int)overlays.size() == wsize.width);
++        for (auto& column : overlays)
++        {
++            same &= ((int)column.size() == wsize.height);
++        }
++
++        if (same)
++        {
++            return;
++        }
++
++        for (int x = 0; x < (int)overlays.size(); x++)
++        {
++            for (int y = 0; y < (int)overlays[x].size(); y++)
++            {
++                if ((x >= wsize.width) || (y >= wsize.height))
++                {
++                    destroy_node(overlays[x][y]);
++                }
++            }
++        }
++
++        auto og = output->get_relative_geometry();
++        auto vp = output->wset()->get_current_workspace();
++        overlays.resize(wsize.width);
++        for (int x = 0; x < wsize.width; x++)
++        {
++            int had = std::min((int)overlays[x].size(), wsize.height);
++            overlays[x].resize(wsize.height);
++            for (int y = had; y < wsize.height; y++)
++            {
++                overlays[x][y] = add_simple_node(output, (x - vp.x) * og.width,
++                    (y - vp.y) * og.height, og.width, og.height);
++            }
++        }
++    }
++
++    wf::signal::connection_t<wf::workspace_grid_changed_signal> grid_changed =
++        [=] (wf::workspace_grid_changed_signal*)
++    {
++        sync_grid();
++        output->render->damage_whole();
++    };
++
+     std::shared_ptr<simple_node_t> get_node_overlay()
+     {
++        sync_grid();
+         auto ws = output->wset()->get_current_workspace();
+         return overlays[ws.x][ws.y];
+     }
+ 
+     std::shared_ptr<anno_ws_overlay> get_current_overlay()
+     {
++        sync_grid();
+         auto ws = output->wset()->get_current_workspace();
+ 
+         return overlays[ws.x][ws.y]->overlay;
+@@ -294,6 +360,7 @@ class wayfire_annotate_screen : public wf::per_output_plugin_instance_t, public
+ 
+     std::shared_ptr<anno_ws_overlay> get_shape_overlay()
+     {
++        sync_grid();
+         auto ws = output->wset()->get_current_workspace();
+ 
+         return overlays[ws.x][ws.y]->shape_overlay;
+@@ -303,13 +370,13 @@ class wayfire_annotate_screen : public wf::per_output_plugin_instance_t, public
+                                                                                     workspace_changed_signal*
+                                                                                     ev)
+         {
+-            auto wsize = output->wset()->get_workspace_grid_size();
+-            auto og    = output->get_relative_geometry();
+-            auto nvp   = ev->new_viewport;
++            sync_grid();
++            auto og  = output->get_relative_geometry();
++            auto nvp = ev->new_viewport;
+ 
+-            for (int x = 0; x < wsize.width; x++)
++            for (int x = 0; x < (int)overlays.size(); x++)
+             {
+-                for (int y = 0; y < wsize.height; y++)
++                for (int y = 0; y < (int)overlays[x].size(); y++)
+                 {
+                     overlays[x][y]->set_position((x - nvp.x) * og.width,
+                         (y - nvp.y) * og.height);
+@@ -776,9 +843,7 @@ class wayfire_annotate_screen : public wf::per_output_plugin_instance_t, public
+         {
+             for (auto& overlay : row)
+             {
+-                overlay_destroy(overlay->overlay);
+-                overlay_destroy(overlay->shape_overlay);
+-                wf::scene::remove_child(overlay);
++                destroy_node(overlay);
+             }
+         }
+ 
